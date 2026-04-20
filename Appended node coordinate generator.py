@@ -140,7 +140,7 @@ def resolve_geometry_workbook(explicit_geometry: Path | None) -> Path:
 
 
 def load_unfiltered_module():
-    module_path = (Path.cwd() / "Code - Full set" / "Unfiltered column coordinates generator.py").resolve()
+    module_path = (Path(__file__).parent / "Unfiltered column coordinates generator.py").resolve()
     spec = importlib.util.spec_from_file_location("unfiltered_generator_runtime", module_path)
     if spec is None or spec.loader is None:
         raise SystemExit(f"Could not load helper module: {module_path}")
@@ -151,7 +151,7 @@ def load_unfiltered_module():
 
 
 def load_legacy_node_module():
-    module_path = (Path.cwd() / "Code - Full set" / "node_coordinate_calculator.py").resolve()
+    module_path = (Path(__file__).parent / "node_coordinate_calculator.py").resolve()
     if not module_path.exists():
         return None
     spec = importlib.util.spec_from_file_location("legacy_node_coordinate_runtime", module_path)
