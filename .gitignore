@@ -1,19 +1,20 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[codz]
+*$py.class
 
-# Secrets — never commit these
-*.bat
-*.lnk
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Environments
 .env
-
-# Test data / outputs
-*.xlsx
-*.dxf
-*.dwg
-*.tmp
+.venv
+env/
+venv/
+ENV/
 
 # Editor / OS
 .vscode/
@@ -21,6 +22,21 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Backup / duplicate files
+# mypy / pytest / linting caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets — never commit these
+*.bat
+*.lnk
+
+# Test data / outputs (don't ship these to clients)
+*.xlsx
+*.dxf
+*.dwg
+*.tmp
+
+# Backup / duplicate script versions
 node_coordinate_calculator (1).py
 node_coordinate_calculator (2).py
