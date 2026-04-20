@@ -1,0 +1,39 @@
+Variable,Value
+Seismic status,True
+Fck,30
+Fy,550
+Slab thickness (mm),150
+Clear cover (mm),30
+Initial stirrup dia (mm),8
+Initial long bar dia (mm),12
+Min beam bar clear spacing (mm),25
+candidate_b_mm,"[230, 300, 375, 450, 600]"
+candidate_d_before_slab_mm,"[150, 225, 300, 375, 450, 600]"
+seeds_a_json,"{""x0_or_xmax"": [300, 450], ""z0"": [300, 230], ""zmax"": [230, 600]}"
+seed_b_mm,"[230, 600]"
+seed_c_mm,"[300, 230]"
+FY_SV (MPa),415
+GAMMA_M_S,1.15
+USE_TL_IN_SR,TRUE
+ENFORCE_25pct_FACE_MIN,TRUE
+TAU_BD_PLAIN_json,"{""15"": 1.2, ""20"": 1.2, ""25"": 1.4, ""30"": 1.5, ""35"": 1.7, ""40"": 1.9, ""45"": 2.0, ""50"": 2.1}"
+TAU_BD_TENSION_DEFORMED_FACTOR,1.6
+hook_type_default,90
+hook_90deg_multiplier,8
+END_REGION_LENGTH_MODE,2d
+BAR_KGPM_json,"{""8"": 0.395, ""10"": 0.617, ""12"": 0.888, ""16"": 1.58, ""20"": 2.47, ""25"": 3.85, ""28"": 4.83, ""32"": 6.31}"
+xu_over_d_table_json,"{""550"": 0.43, ""500"": 0.46, ""415"": 0.48, ""250"": 0.53, ""default"": 0.48}"
+tau_c_p_range_json,"[0.15, 3.0]"
+Steel_density (kg/m3),7850
+bar_diameters_json,"[12,16,20,25]"
+SEED_MINIMAL_BACKBONE,TRUE
+ALLOW_34_RULE,TRUE
+rho_max_seismic,0.025
+rho_max_nonseismic,0.04
+Aggregates max size (mm),20
+agg_plus_delta_extra_mm,5
+ALLOW_2623_2B,FALSE
+Primary slab max spacing cap (mm),200
+Column clear cover (mm),40
+Es (N/mm2),200000
+Epsilon_cu,0.0035

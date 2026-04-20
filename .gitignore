@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Secrets — never commit these
+*.bat
+*.lnk
+.env
+
+# Test data / outputs
+*.xlsx
+*.dxf
+*.dwg
+*.tmp
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Backup / duplicate files
+node_coordinate_calculator (1).py
+node_coordinate_calculator (2).py
