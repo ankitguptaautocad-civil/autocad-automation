@@ -40,3 +40,9 @@ Thumbs.db
 # Backup / duplicate script versions
 node_coordinate_calculator (1).py
 node_coordinate_calculator (2).py
+
+# --- Web server runtime state (don't commit) ---
+server/instance/
+server/jobs/
+server/.env
+server/.venv/

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Home · StructAuto{% endblock %}
+{% block content %}
+<h1>Welcome, {{ current_user.username }}</h1>
+<p class="muted">Pick a pipeline to run.</p>
+
+<div class="tile-grid">
+  <a class="tile tile-dxf" href="{{ url_for('dxf_page') }}">
+    <h2>DXF Pipeline</h2>
+    <p>Upload 3 DXFs (typical / plinth / terrace) → get column &amp; wall Excels.</p>
+  </a>
+  <a class="tile tile-node" href="{{ url_for('node_page') }}">
+    <h2>Node Pipeline</h2>
+    <p>Upload DXF-pipeline &amp; anchor Excels → get node_coordinates + other_coordinates.</p>
+  </a>
+</div>
+
+<div class="card" style="margin-top:2rem">
+  <h3>Typical workflow</h3>
+  <ol>
+    <li>Run <code>Run Anchor Workflow.bat</code> on the AutoCAD operator's laptop → produces 3 <code>floor_coordinates_*.xlsx</code>.</li>
+    <li>Open <strong>DXF Pipeline</strong> here → upload 3 DXFs → save outputs to your project folder.</li>
+    <li>Open <strong>Node Pipeline</strong> here → upload the 2 DXF outputs + 3 anchor outputs → save final results.</li>
+  </ol>
+</div>
+{% endblock %}

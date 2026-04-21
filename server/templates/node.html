@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Node Pipeline · StructAuto{% endblock %}
+{% block content %}
+<h1>Node Pipeline</h1>
+<p class="muted">
+  Upload the 5 Excels (2 from DXF pipeline + 3 from Anchor workflow).
+</p>
+
+<div class="card">
+  <div class="row">
+    <button id="pick-folder" class="btn-primary">📁 Pick working folder (outputs save here)</button>
+    <span id="folder-label" class="muted">No folder selected.</span>
+  </div>
+
+  <div class="stack" style="margin-top:1rem">
+    <label>
+      Select Excel files (col_rectangles, walls_m, and the 3 floor_coordinates files)
+      <input id="dxf-input" type="file" accept=".xlsx" multiple />
+    </label>
+    <ul id="file-list" class="file-list"></ul>
+
+    <button id="run-btn" class="btn-primary" disabled>▶ Run pipeline</button>
+  </div>
+</div>
+
+<div id="output-card" class="card hidden" style="margin-top:1.5rem">
+  <h3>Result</h3>
+  <div id="status"></div>
+  <ul id="output-list" class="file-list"></ul>
+  <pre id="log" class="log hidden"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/filesystem.js') }}"></script>
+<script>
+  initPipelinePage({
+    kind: "node",
+    endpoint: "{{ url_for('api_run_node') }}",
+    downloadBase: "/api/download",
+    accept: [".xlsx"],
+  });
+</script>
+{% endblock %}

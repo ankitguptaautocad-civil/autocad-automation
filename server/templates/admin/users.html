@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Users · Admin{% endblock %}
+{% block content %}
+<div class="row">
+  <h1>Users</h1>
+  <span class="sp"></span>
+  <a class="btn-sm" href="{{ url_for('admin_logs') }}">View Audit Logs →</a>
+</div>
+
+<div class="card">
+  <h3>Add user</h3>
+  <form method="post" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+    <input type="hidden" name="action" value="create" />
+    <input name="username" placeholder="username" required />
+    <input name="password" type="password" placeholder="password" required />
+    <select name="role">
+      <option value="user">user</option>
+      <option value="admin">admin</option>
+    </select>
+    <button type="submit" class="btn-primary">+ Add</button>
+  </form>
+</div>
+
+<div class="card" style="margin-top:1rem">
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Username</th><th>Role</th><th>Status</th>
+        <th>Created</th><th>Last login</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>{{ u.username }}</td>
+        <td>{{ u.role }}</td>
+        <td>{{ 'disabled' if u.disabled else 'active' }}</td>
+        <td>{{ u.created_at.strftime('%Y-%m-%d %H:%M') if u.created_at else '' }}</td>
+        <td>{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') if u.last_login_at else '—' }}</td>
+        <td>
+          <form method="post" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+            <input type="hidden" name="action" value="reset" />
+            <input type="hidden" name="user_id" value="{{ u.id }}" />
+            <input name="new_password" type="password" placeholder="new password" required />
+            <button class="btn-sm">Reset</button>
+          </form>
+          {% if u.id != current_user.id %}
+            <form method="post" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <input type="hidden" name="action" value="toggle_disabled" />
+              <input type="hidden" name="user_id" value="{{ u.id }}" />
+              <button class="btn-sm">{{ 'Enable' if u.disabled else 'Disable' }}</button>
+            </form>
+            <form method="post" style="display:inline"
+                  onsubmit="return confirm('Delete user {{ u.username }}?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <input type="hidden" name="action" value="delete" />
+              <input type="hidden" name="user_id" value="{{ u.id }}" />
+              <button class="btn-sm btn-danger">Delete</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

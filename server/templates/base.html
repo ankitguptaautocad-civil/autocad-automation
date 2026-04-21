@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}StructAuto{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('home') if current_user.is_authenticated else url_for('login') }}">StructAuto</a>
+    {% if current_user.is_authenticated %}
+      <nav>
+        <a href="{{ url_for('home') }}">Home</a>
+        <a href="{{ url_for('dxf_page') }}">DXF Pipeline</a>
+        <a href="{{ url_for('node_page') }}">Node Pipeline</a>
+        {% if current_user.is_admin %}
+          <a href="{{ url_for('admin_users') }}">Admin</a>
+        {% endif %}
+        <span class="sp"></span>
+        <span class="user">👤 {{ current_user.username }}</span>
+        <a class="btn-sm" href="{{ url_for('logout') }}">Logout</a>
+      </nav>
+    {% endif %}
+  </header>
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, msg in messages %}
+        <div class="flash flash-{{ category }}">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

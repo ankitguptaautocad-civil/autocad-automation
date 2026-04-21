@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}DXF Pipeline · StructAuto{% endblock %}
+{% block content %}
+<h1>DXF Pipeline</h1>
+<p class="muted">
+  Upload the 3 DXFs (typical / plinth / terrace). Outputs will save back into your chosen working folder.
+</p>
+
+<div class="card">
+  <div class="row">
+    <button id="pick-folder" class="btn-primary">📁 Pick working folder (outputs save here)</button>
+    <span id="folder-label" class="muted">No folder selected (Firefox / Safari: file will download to Downloads).</span>
+  </div>
+
+  <div class="stack" style="margin-top:1rem">
+    <label>
+      Select DXF files
+      <input id="dxf-input" type="file" accept=".dxf" multiple />
+    </label>
+    <ul id="file-list" class="file-list"></ul>
+
+    <button id="run-btn" class="btn-primary" disabled>▶ Run pipeline</button>
+  </div>
+</div>
+
+<div id="output-card" class="card hidden" style="margin-top:1.5rem">
+  <h3>Result</h3>
+  <div id="status"></div>
+  <ul id="output-list" class="file-list"></ul>
+  <pre id="log" class="log hidden"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/filesystem.js') }}"></script>
+<script>
+  initPipelinePage({
+    kind: "dxf",
+    endpoint: "{{ url_for('api_run_dxf') }}",
+    downloadBase: "/api/download",
+    accept: [".dxf"],
+  });
+</script>
+{% endblock %}
