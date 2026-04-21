@@ -59,7 +59,10 @@ def create_app() -> Flask:
 
     @login_manager.user_loader
     def load_user(user_id: str):
-        return db.session.get(User, int(user_id))
+        user = db.session.get(User, int(user_id))
+        if user is None or user.disabled:
+            return None
+        return user
 
     Config.JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -372,6 +375,25 @@ def _register_routes(app: Flask) -> None:
                     db.session.commit()
                     _log("admin_reset_password", files=[u.username])
                     flash(f"Password reset for '{u.username}'.", "success")
+            elif action == "rename":
+                uid = int(request.form.get("user_id"))
+                new_name = request.form.get("new_username", "").strip()
+                u = db.session.get(User, uid)
+                if not u or not new_name:
+                    flash("Missing user or new username.", "error")
+                elif User.query.filter(
+                    User.username == new_name, User.id != uid
+                ).first():
+                    flash(f"Username '{new_name}' already taken.", "error")
+                else:
+                    old_name = u.username
+                    u.username = new_name
+                    db.session.commit()
+                    _log(
+                        "admin_rename_user",
+                        files=[f"{old_name}->{new_name}"],
+                    )
+                    flash(f"Renamed '{old_name}' to '{new_name}'.", "success")
             elif action == "toggle_disabled":
                 uid = int(request.form.get("user_id"))
                 u = db.session.get(User, uid)
@@ -410,7 +432,7 @@ def _register_routes(app: Flask) -> None:
         users = [u.username for u in User.query.order_by(User.username).all()]
         actions = [
             "login", "logout", "dxf_run", "node_run", "download", "download_zip",
-            "admin_create_user", "admin_reset_password",
+            "admin_create_user", "admin_reset_password", "admin_rename_user",
             "admin_toggle_disabled", "admin_delete_user",
         ]
         return render_template(

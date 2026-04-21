@@ -41,6 +41,13 @@
         <td>
           <form method="post" style="display:inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+            <input type="hidden" name="action" value="rename" />
+            <input type="hidden" name="user_id" value="{{ u.id }}" />
+            <input name="new_username" placeholder="new username" required />
+            <button class="btn-sm">Rename</button>
+          </form>
+          <form method="post" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
             <input type="hidden" name="action" value="reset" />
             <input type="hidden" name="user_id" value="{{ u.id }}" />
             <input name="new_password" type="password" placeholder="new password" required />
