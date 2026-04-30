@@ -56,3 +56,14 @@ class Config:
         SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.replace(
             "postgres://", "postgresql://", 1
         )
+
+    # Connection-pool resilience for serverless Postgres (Neon).
+    # Neon silently kills idle TCP/SSL connections after a few minutes; without
+    # pre-ping, the pool hands out dead connections and the next query 500s with
+    # "SSL connection has been closed unexpectedly" (seen 2026-04-30 in prod).
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_pre_ping": True,   # SELECT 1 before checkout; replace dead connections silently
+        "pool_recycle": 280,     # recycle every <5 min, beats Neon's idle-timeout
+        "pool_size": 5,
+        "max_overflow": 5,
+    }
