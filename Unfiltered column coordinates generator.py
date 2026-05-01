@@ -2264,6 +2264,9 @@ def secondary_row_values(
         beam_width_mm, beam_depth_mm = SECONDARY_PLINTH_WIDTH_MM, SECONDARY_PLINTH_DEPTH_MM
     else:
         beam_width_mm, beam_depth_mm = typical_width_mm, typical_depth_mm
+    # Plinth depth uplift: take the class-based depth and add 150 mm.
+    if floor == "Plinth":
+        beam_depth_mm += 150
 
     return [
         beam.no,
@@ -2400,6 +2403,12 @@ def write_output(
             else:
                 beam_width_mm, beam_depth_mm = typical_beam_width_mm, typical_beam_depth_mm
                 wall_thickness_value = wall_thickness_mm
+            # Plinth depth uplift: take the class-based depth and add 150 mm.
+            if floor == "Plinth":
+                beam_depth_mm += 150
+            # Front/Back edge boundary wall = 300 mm on all floors (client rule).
+            if beam.beam_class == "Edge" and beam.direction == "X":
+                wall_thickness_value = 300
             wall_coverage_value = raw_wall_coverage_pct
 
             ws_beams.append(

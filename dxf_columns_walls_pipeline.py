@@ -429,42 +429,15 @@ def discover_single_floor_dxf(search_dir: Path, floor_key: str) -> Path:
     raise SystemExit(f"Could not find any DXF or DWG containing '{keyword}' in {search_dir}")
 
 
-def derive_siblings_from_seed(seed_path: Path) -> dict[str, Path]:
-    """Given any one of the 3 DXFs, derive the paths of the other 2 by keyword substitution."""
-    seed = seed_path.resolve()
-    if not seed.exists():
-        raise SystemExit(f"--from-dxf file does not exist: {seed}")
-    name = seed.stem
-    ext = seed.suffix
-    parent = seed.parent
-    match = re.search(r"(typical|plinth|terrace)", name, re.IGNORECASE)
-    if not match:
-        raise SystemExit(
-            f"--from-dxf file '{seed.name}' does not contain 'typical', 'plinth', or 'terrace' in its name."
-        )
-    stem = re.sub(r"(?i)" + re.escape(match.group(1)), "{KW}", name)
-    resolved: dict[str, Path] = {}
-    for floor_key in FLOOR_KEYS:
-        candidate = parent / (stem.replace("{KW}", FLOOR_KEYWORDS[floor_key]) + ext)
-        if not candidate.exists():
-            raise SystemExit(f"Expected sibling DXF not found: {candidate}")
-        resolved[floor_key] = candidate
-    return resolved
-
-
 def resolve_floor_dxfs(args: argparse.Namespace) -> dict[str, Path]:
     search_dir = args.dxf_dir.resolve()
     if not search_dir.exists():
         raise SystemExit(f"Drawing search directory not found: {search_dir}")
 
-    seed_paths: dict[str, Path] = {}
-    if getattr(args, "from_dxf", None) is not None:
-        seed_paths = derive_siblings_from_seed(args.from_dxf)
-
     explicit = {
-        "typical": resolve_optional_path(args.typical_dxf) or seed_paths.get("typical"),
-        "plinth": resolve_optional_path(args.plinth_dxf) or seed_paths.get("plinth"),
-        "terrace": resolve_optional_path(args.terrace_dxf) or seed_paths.get("terrace"),
+        "typical": resolve_optional_path(args.typical_dxf),
+        "plinth": resolve_optional_path(args.plinth_dxf),
+        "terrace": resolve_optional_path(args.terrace_dxf),
     }
     if args.dxf is not None and explicit["typical"] is None:
         explicit["typical"] = base.validate_drawing_path(args.dxf)
@@ -636,7 +609,6 @@ def extract_floor_artifacts(
         args.column_hatch_layer,
         args.inch_multiple_tolerance,
         args.hatch_overlap_tolerance,
-        args.mm_per_unit,
     )
     candidate = base.select_candidate(candidates, args.block_name, args.target_rect_count if floor_key == "typical" else None)
     row_tolerance_units = args.row_tolerance_mm / args.mm_per_unit
@@ -776,7 +748,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--typical-dxf", type=Path, default=None, help="Optional typical-floor DXF or DWG path.")
     parser.add_argument("--plinth-dxf", type=Path, default=None, help="Optional plinth DXF or DWG path.")
     parser.add_argument("--terrace-dxf", type=Path, default=None, help="Optional terrace DXF or DWG path.")
-    parser.add_argument("--from-dxf", type=Path, default=None, help="Any one of the 3 DXFs (typical/plinth/terrace). The other 2 siblings are auto-derived by replacing the keyword in the filename.")
     parser.add_argument("--column-layer", default=DEFAULT_COLUMN_LAYER, help="Layer name for column rectangles.")
     parser.add_argument("--column-hatch-layer", default=DEFAULT_COLUMN_HATCH_LAYER, help="Layer name for column hatches.")
     parser.add_argument("--target-rect-count", type=int, default=DEFAULT_TARGET_RECT_COUNT, help="Optional expected rectangle count for auto-detecting the typical-floor columns.")
@@ -799,7 +770,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wall-face-tolerance-m", type=float, default=DEFAULT_WALL_FACE_TOLERANCE_M, help="Tolerance in meters used to match unresolved column faces to nearby wall faces.")
     parser.add_argument("--lift-wall-search-radius-m", type=float, default=DEFAULT_LIFT_WALL_SEARCH_RADIUS_M, help="Search radius in meters used while finding shaft walls around exact LIFT text.")
     parser.add_argument("--lift-text-search-radius-m", type=float, default=DEFAULT_LIFT_TEXT_SEARCH_RADIUS_M, help="Search radius in meters used while finding the nearest supporting columns around LIFT text.")
-    parser.add_argument("--lift-box-margin-m", type=float, default=DEFAULT_LIFT_BOX_MARGIN_M, help="Margin in meters added around the wall bounding box when detecting lift columns.")
     parser.add_argument("--match-cluster-tolerance-m", type=float, default=DEFAULT_MATCH_CLUSTER_TOLERANCE_M, help="Tolerance in meters used while finding the translation between the typical columns and the plinth/terrace columns.")
     parser.add_argument("--match-distance-tolerance-m", type=float, default=DEFAULT_MATCH_DISTANCE_TOLERANCE_M, help="Maximum center-point mismatch in meters allowed while mapping plinth/terrace columns back to the typical-floor column order.")
     parser.add_argument("--column-output", type=Path, default=None, help="Output path for the wall-assisted column workbook.")
@@ -825,7 +795,7 @@ def main() -> None:
         lift_points,
         args.lift_wall_search_radius_m,
         args.lift_text_search_radius_m,
-        args.lift_box_margin_m,
+        DEFAULT_LIFT_BOX_MARGIN_M,
     )
     final_tags = apply_lift_locations(final_tags, lift_rect_ids, local_rects=typical.local_rects)
 
@@ -889,49 +859,6 @@ def main() -> None:
                     post_lift_changes.append(f"C{idx}: F/B {yt} -> {new_yt} (post-lift consensus)")
                 final_tags[idx] = (new_xt, new_yt, loc)
 
-    # ── Pass 3: Spatial proximity inheritance for still-unresolved columns ──
-    proximity_changes = []
-    MAX_PROXIMITY_M = 1.5  # Don't inherit from columns further than this
-    rect_by_idx = {rect.idx: rect for rect in typical.local_rects}
-    unresolved_after_p2 = {idx for idx, (xt, yt, _) in final_tags.items() if xt is None or yt is None}
-
-    if unresolved_after_p2:
-        resolved_rects = {idx: (xt, yt) for idx, (xt, yt, _) in final_tags.items()
-                          if xt is not None and yt is not None}
-        for idx in unresolved_after_p2:
-            rect = rect_by_idx[idx]
-            x_tag, y_tag, loc = final_tags[idx]
-
-            # Resolve L/R by nearest resolved column (by X center distance)
-            if x_tag is None and resolved_rects:
-                best_idx, best_dist = None, MAX_PROXIMITY_M + 1
-                for r_idx, (r_xt, _) in resolved_rects.items():
-                    r_rect = rect_by_idx[r_idx]
-                    dist = abs(rect.cx_m - r_rect.cx_m)
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_idx = r_idx
-                if best_idx is not None and best_dist <= MAX_PROXIMITY_M:
-                    x_tag = resolved_rects[best_idx][0]
-                    proximity_changes.append(
-                        f"C{idx}: Left/Right inherited from C{best_idx} ({best_dist*1000:.0f}mm away) -> {x_tag}")
-
-            # Resolve F/B by nearest resolved column (by Y center distance)
-            if y_tag is None and resolved_rects:
-                best_idx, best_dist = None, MAX_PROXIMITY_M + 1
-                for r_idx, (_, r_yt) in resolved_rects.items():
-                    r_rect = rect_by_idx[r_idx]
-                    dist = abs(rect.cy_m - r_rect.cy_m)
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_idx = r_idx
-                if best_idx is not None and best_dist <= MAX_PROXIMITY_M:
-                    y_tag = resolved_rects[best_idx][1]
-                    proximity_changes.append(
-                        f"C{idx}: Front/Back inherited from C{best_idx} ({best_dist*1000:.0f}mm away) -> {y_tag}")
-
-            final_tags[idx] = (x_tag, y_tag, loc)
-
     plinth = extract_floor_artifacts("plinth", floor_dxfs["plinth"], args, reference_rects=typical.ordered_rects)
     terrace = extract_floor_artifacts("terrace", floor_dxfs["terrace"], args, reference_rects=typical.ordered_rects)
 
@@ -976,30 +903,10 @@ def main() -> None:
     print(f"Post-lift consensus    : {len(post_lift_changes)}")
     for change in post_lift_changes:
         print(f"  - {change}")
-    print(f"Proximity fills (VERIFY): {len(proximity_changes)}")
-    for change in proximity_changes:
-        print(f"  - {change}")
     print(f"Unresolved Left/Right  : {unresolved_lr}")
     print(f"Unresolved Front/Back  : {unresolved_fb}")
     print(f"Column workbook saved  : {column_output}")
     print(f"Wall workbook saved    : {wall_output}")
-
-    # Show popup if proximity fills were made — user should verify
-    if proximity_changes:
-        try:
-            import tkinter as tk
-            from tkinter import messagebox
-            msg = "Proximity-inherited tags (PLEASE VERIFY):\n\n"
-            for change in proximity_changes:
-                msg += f"  {change}\n"
-            msg += "\nThese columns were tagged by copying from the nearest\n"
-            msg += "resolved column. Please verify in the output Excel."
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showwarning("Proximity Fills — Verify", msg)
-            root.destroy()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":

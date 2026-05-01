@@ -467,7 +467,6 @@ def main() -> None:
         args.column_hatch_layer,
         args.inch_multiple_tolerance,
         args.hatch_overlap_tolerance,
-        args.mm_per_unit,
     )
     candidate = base.select_candidate(candidates, args.block_name, args.target_rect_count)
     row_tolerance_units = args.row_tolerance_mm / args.mm_per_unit

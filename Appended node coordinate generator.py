@@ -469,15 +469,58 @@ def set_column_width(ws, header_map: dict[str, int], header_name: str, width: fl
     ws.column_dimensions[get_column_letter(idx + 1)].width = width
 
 
+def _find_building_info_xlsx() -> Path | None:
+    for d in candidate_search_dirs():
+        p = d / "building info.xlsx"
+        if p.exists():
+            return p
+    return None
+
+
+def _read_building_info(path: Path) -> dict:
+    wb = load_workbook(path, data_only=True)
+    ws = wb["building info"]
+    info: dict = {}
+    for row in ws.iter_rows(min_row=1, values_only=True):
+        if row and row[0] is not None:
+            info[str(row[0]).strip()] = row[1]
+        if row and len(row) > 4 and row[4] is not None:
+            info[str(row[4]).strip()] = row[5]
+    wb.close()
+    return info
+
+
+def _generate_elevation_yd_zd(info: dict) -> tuple[list[str], list[int]]:
+    y0_shift = float(info["Y = 0 Shift Above Base"])
+    floors = int(info["Floors"])
+    story_height = float(info["Story height"])
+    mumty_height = float(info["Mumty height"])
+    elevations: list[float] = [-y0_shift, 0.0]
+    cumulative = 0.0
+    for _ in range(floors - 1):
+        cumulative = round(cumulative + story_height, 3)
+        elevations.append(cumulative)
+    elevations.append(round(cumulative + mumty_height, 3))
+    headers: list[str] = []
+    defaults: list[int] = []
+    for elev in elevations:
+        elev_str = f"{elev:g}"
+        headers.extend([f"YD({elev_str})", f"ZD({elev_str})"])
+        defaults.extend([300, 600])
+    return headers, defaults
+
+
 def append_node_columns(ws_cols, columns: list[ColumnRecord], leveled_nodes: dict[str, tuple[float, float]]) -> None:
-    default_yd = 300
-    default_zd = 600
-    headers = [
-        "Node coordinate X (m)",
-        "Node coordinate Y (m)",
-        "YD",
-        "ZD",
-    ]
+    info_path = _find_building_info_xlsx()
+    if info_path is None:
+        raise SystemExit(
+            "building info.xlsx not found. Place it in cwd or cwd/STD ANL model — "
+            "YD/ZD elevation columns are derived from it."
+        )
+    info = _read_building_info(info_path)
+    yd_zd_headers, yd_zd_defaults = _generate_elevation_yd_zd(info)
+
+    headers = ["Node coordinate X (m)", "Node coordinate Y (m)"] + yd_zd_headers
     start_col = ws_cols.max_column + 1
     header_positions: dict[str, int] = {}
     for offset, header in enumerate(headers):
@@ -488,14 +531,11 @@ def append_node_columns(ws_cols, columns: list[ColumnRecord], leveled_nodes: dic
         node_x, node_y = leveled_nodes[column.type_name]
         ws_cols.cell(row=column.row_idx, column=header_positions["Node coordinate X (m)"], value=node_x)
         ws_cols.cell(row=column.row_idx, column=header_positions["Node coordinate Y (m)"], value=node_y)
-        ws_cols.cell(row=column.row_idx, column=header_positions["YD"], value=default_yd)
-        ws_cols.cell(row=column.row_idx, column=header_positions["ZD"], value=default_zd)
-    width_map = {
-        "Node coordinate X (m)": 18,
-        "Node coordinate Y (m)": 18,
-        "YD": 10,
-        "ZD": 10,
-    }
+        for yzh, yzv in zip(yd_zd_headers, yd_zd_defaults):
+            ws_cols.cell(row=column.row_idx, column=header_positions[yzh], value=yzv)
+    width_map: dict[str, float] = {"Node coordinate X (m)": 18, "Node coordinate Y (m)": 18}
+    for yzh in yd_zd_headers:
+        width_map[yzh] = 10
     for header, width in width_map.items():
         ws_cols.column_dimensions[get_column_letter(header_positions[header])].width = width
 
@@ -995,6 +1035,55 @@ def write_other_coordinates_workbook(
         for row in ws_ew.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        # "Extra walls (filtered)" sheet — this logic moved here from
+        # datadata_updater.py. Keep only rows where Present == "YES" and
+        # Wall thickness is non-empty. Headers & column order match what
+        # datadata_updater used to write into Datadata2.
+        valid_ew_rows = []
+        for row in ew_rows:
+            present = str(row[8]).strip().upper() if row[8] is not None else ""
+            thickness = row[9]
+            if present != "YES":
+                continue
+            if thickness in (None, ""):
+                continue
+            valid_ew_rows.append(row)
+
+        if valid_ew_rows:
+            ws_ewf = wb.create_sheet("Extra walls (filtered)")
+            filtered_headers = [
+                "Extra Wall",
+                "start_x",
+                "start_z",
+                "end_x",
+                "end_z",
+                "Wall thickness (mm)",
+                "Floor",
+                "Present",
+            ]
+            filtered_widths = [12, 14, 14, 14, 14, 18, 14, 10]
+            ws_ewf.append(filtered_headers)
+            prev_no = None
+            for row_data in valid_ew_rows:
+                ew_no = row_data[0]
+                is_first = (ew_no != prev_no)
+                ws_ewf.append([
+                    ew_no if is_first else None,   # Extra Wall number only on first row
+                    row_data[10],                   # start_x (snapped X1)
+                    row_data[11],                   # start_z (snapped Y1)
+                    row_data[12],                   # end_x (snapped X2)
+                    row_data[13],                   # end_z (snapped Y2)
+                    row_data[9],                    # Wall thickness (mm)
+                    row_data[7],                    # Floor
+                    row_data[8],                    # Present
+                ])
+                prev_no = ew_no
+            for idx, width in enumerate(filtered_widths, start=1):
+                ws_ewf.column_dimensions[get_column_letter(idx)].width = width
+            for row in ws_ewf.iter_rows():
+                for cell in row:
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     wb.save(output_path)
 
