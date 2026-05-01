@@ -289,17 +289,35 @@ def resolve_rectangle_workbook(input_workbook: Path) -> Path | None:
 
 
 def normalize_lr(tag: str | None) -> str:
-    value = (tag or "").strip().lower()
+    if tag is None or (isinstance(tag, str) and not tag.strip()):
+        raise SystemExit(
+            "Left/Right cell is BLANK. Open the col_rectangles Excel, find this "
+            "row, and type 'Left', 'Right', or 'Centre' in the Left/Right column. "
+            "Save the Excel and re-upload."
+        )
+    value = str(tag).strip().lower()
     if value in {"left", "right", "centre", "center"}:
         return "Centre" if value in {"centre", "center"} else value.title()
-    raise SystemExit(f"Invalid Left/Right tag: {tag!r}")
+    raise SystemExit(
+        f"Left/Right contains invalid value {tag!r}. "
+        f"Expected one of: Left, Right, Centre."
+    )
 
 
 def normalize_fb(tag: str | None) -> str:
-    value = (tag or "").strip().lower()
+    if tag is None or (isinstance(tag, str) and not tag.strip()):
+        raise SystemExit(
+            "Front/Back cell is BLANK. Open the col_rectangles Excel, find this "
+            "row, and type 'Front', 'Back', or 'Centre' in the Front/Back column. "
+            "Save the Excel and re-upload."
+        )
+    value = str(tag).strip().lower()
     if value in {"front", "back", "centre", "center"}:
         return "Centre" if value in {"centre", "center"} else value.title()
-    raise SystemExit(f"Invalid Front/Back tag: {tag!r}")
+    raise SystemExit(
+        f"Front/Back contains invalid value {tag!r}. "
+        f"Expected one of: Front, Back, Centre."
+    )
 
 
 def select_coordinate(min_value: float, max_value: float, tag: str) -> float:
@@ -363,13 +381,15 @@ def read_source_columns(path: Path) -> list[SourceColumn]:
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if all(value in (None, "") for value in row):
             continue
+        col_no_raw = row[header_map["columnno"]]
+        col_label = str(col_no_raw).strip() if col_no_raw not in (None, "") else f"row {row_idx}"
         try:
             left_right = normalize_lr(row[header_map["leftright"]])
             front_back = normalize_fb(row[header_map["frontback"]])
         except SystemExit as exc:
-            raise SystemExit(f"Row {row_idx}: {exc}") from exc
+            raise SystemExit(f"Row {row_idx} (Column {col_label}): {exc}") from exc
 
-        idx = parse_column_number(row[header_map["columnno"]], len(columns) + 1)
+        idx = parse_column_number(col_no_raw, len(columns) + 1)
 
         columns.append(
             SourceColumn(
