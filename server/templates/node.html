@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Node Pipeline</h1>
 <p class="muted">
-  Upload the 5 Excels (2 from DXF pipeline + 3 from Anchor workflow).
+  Upload the 4 Excels: 2 from the DXF Pipeline + the nonplinth secondary file from the Anchor Workflow + <code>building info.xlsx</code>.
 </p>
 
 <div class="card">
@@ -14,7 +14,7 @@
 
   <div class="stack" style="margin-top:1rem">
     <label>
-      Select Excel files (col_rectangles, walls_m, and the 3 floor_coordinates files)
+      Select Excel files (<code>*_col_rectangles_m_v2_wall_assisted.xlsx</code>, <code>*_walls_m_v2.xlsx</code>, <code>*_secondary_coordinates_nonplinth_*.xlsx</code>, and <code>building info.xlsx</code>)
       <input id="dxf-input" type="file" accept=".xlsx" multiple />
     </label>
     <ul id="file-list" class="file-list"></ul>

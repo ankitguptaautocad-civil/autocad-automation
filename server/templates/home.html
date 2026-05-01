@@ -11,16 +11,16 @@
   </a>
   <a class="tile tile-node" href="{{ url_for('node_page') }}">
     <h2>Node Pipeline</h2>
-    <p>Upload DXF-pipeline &amp; anchor Excels → get node_coordinates + other_coordinates.</p>
+    <p>Upload 4 Excels (DXF outputs + nonplinth secondary + <code>building info.xlsx</code>) → get node_coordinates + other_coordinates + column_beam_pairs.</p>
   </a>
 </div>
 
 <div class="card" style="margin-top:2rem">
   <h3>Typical workflow</h3>
   <ol>
-    <li>Run <code>Run Anchor Workflow.bat</code> on the AutoCAD operator's laptop → produces 3 <code>floor_coordinates_*.xlsx</code>.</li>
+    <li>Run <code>Run Anchor Workflow.bat</code> on the AutoCAD operator's laptop → produces <code>floor_coordinates_*.xlsx</code> files.</li>
     <li>Open <strong>DXF Pipeline</strong> here → upload 3 DXFs → save outputs to your project folder.</li>
-    <li>Open <strong>Node Pipeline</strong> here → upload the 2 DXF outputs + 3 anchor outputs → save final results.</li>
+    <li>Open <strong>Node Pipeline</strong> here → upload the 2 DXF outputs + the nonplinth secondary file + <code>building info.xlsx</code> → save final results.</li>
   </ol>
 </div>
 {% endblock %}
