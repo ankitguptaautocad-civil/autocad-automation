@@ -289,35 +289,17 @@ def resolve_rectangle_workbook(input_workbook: Path) -> Path | None:
 
 
 def normalize_lr(tag: str | None) -> str:
-    if tag is None or (isinstance(tag, str) and not tag.strip()):
-        raise SystemExit(
-            "Left/Right cell is BLANK. Open the col_rectangles Excel, find this "
-            "row, and type 'Left', 'Right', or 'Centre' in the Left/Right column. "
-            "Save the Excel and re-upload."
-        )
-    value = str(tag).strip().lower()
+    value = (tag or "").strip().lower()
     if value in {"left", "right", "centre", "center"}:
         return "Centre" if value in {"centre", "center"} else value.title()
-    raise SystemExit(
-        f"Left/Right contains invalid value {tag!r}. "
-        f"Expected one of: Left, Right, Centre."
-    )
+    raise SystemExit(f"Invalid Left/Right tag: {tag!r}")
 
 
 def normalize_fb(tag: str | None) -> str:
-    if tag is None or (isinstance(tag, str) and not tag.strip()):
-        raise SystemExit(
-            "Front/Back cell is BLANK. Open the col_rectangles Excel, find this "
-            "row, and type 'Front', 'Back', or 'Centre' in the Front/Back column. "
-            "Save the Excel and re-upload."
-        )
-    value = str(tag).strip().lower()
+    value = (tag or "").strip().lower()
     if value in {"front", "back", "centre", "center"}:
         return "Centre" if value in {"centre", "center"} else value.title()
-    raise SystemExit(
-        f"Front/Back contains invalid value {tag!r}. "
-        f"Expected one of: Front, Back, Centre."
-    )
+    raise SystemExit(f"Invalid Front/Back tag: {tag!r}")
 
 
 def select_coordinate(min_value: float, max_value: float, tag: str) -> float:
@@ -381,15 +363,13 @@ def read_source_columns(path: Path) -> list[SourceColumn]:
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if all(value in (None, "") for value in row):
             continue
-        col_no_raw = row[header_map["columnno"]]
-        col_label = str(col_no_raw).strip() if col_no_raw not in (None, "") else f"row {row_idx}"
         try:
             left_right = normalize_lr(row[header_map["leftright"]])
             front_back = normalize_fb(row[header_map["frontback"]])
         except SystemExit as exc:
-            raise SystemExit(f"Row {row_idx} (Column {col_label}): {exc}") from exc
+            raise SystemExit(f"Row {row_idx}: {exc}") from exc
 
-        idx = parse_column_number(col_no_raw, len(columns) + 1)
+        idx = parse_column_number(row[header_map["columnno"]], len(columns) + 1)
 
         columns.append(
             SourceColumn(
@@ -1802,13 +1782,13 @@ def generate_r4_wall_support(
     boundary_tolerance_m: float,
 ) -> list[SecondaryBeamCandidate]:
     candidates: list[SecondaryBeamCandidate] = []
-    min_length_m = SECONDARY_R4_MIN_WALL_LENGTH_M if floor_group == "plinth" else SECONDARY_R4_NONPLINTH_MIN_WALL_LENGTH_M
+    min_length_m = SECONDARY_R4_NONPLINTH_MIN_WALL_LENGTH_M
     for chain in wall_chains:
         if chain.length < min_length_m:
             continue
         if segment_covered_by_supports(chain.axis, chain.fixed, chain.start, chain.end, structural_supports):
             continue
-        if chain.length < SECONDARY_R4_STRONG_WALL_LENGTH_M and not chain_aligns_with_zone_edge(chain, rectangles):
+        if floor_group != "plinth" and chain.length < SECONDARY_R4_STRONG_WALL_LENGTH_M and not chain_aligns_with_zone_edge(chain, rectangles):
             continue
         if chain_near_zone_interior_projection(chain, rectangles):
             continue
@@ -2025,6 +2005,10 @@ def generate_secondary_group(
     preaccepted: list[SecondaryBeamCandidate] | None = None,
 ) -> tuple[list[SecondaryBeam], list[dict[str, object]]]:
     column_points = [(column.type_name, round(node_map[column.type_name][0], 3), round(node_map[column.type_name][1], 3)) for column in columns]
+    _bnd_min_x = min(cx for _, cx, _ in column_points)
+    _bnd_max_x = max(cx for _, cx, _ in column_points)
+    _bnd_min_y = min(cy for _, _, cy in column_points)
+    _bnd_max_y = max(cy for _, _, cy in column_points)
     active_rules = enabled_rules or {"R1", "R2", "R3", "R4", "R5"}
     accepted: list[SecondaryBeamCandidate] = list(preaccepted or [])
     audit_rows: list[dict[str, object]] = []
@@ -2054,6 +2038,14 @@ def generate_secondary_group(
             r3_floors = tuple(floor for floor in floors if floor in {"Typical floor roof", "Terrace"})
             if r3_floors:
                 staged.extend(generate_r3_large_panel_dividers(columns, column_points, refreshed_supports, wall_chains, rectangles, floor_group, r3_floors, boundary_tolerance_m))
+        _tol = SECONDARY_SUPPORT_TOL_M
+        staged = [
+            c for c in staged
+            if c.x1 >= _bnd_min_x - _tol and c.x2 >= _bnd_min_x - _tol
+            and c.x1 <= _bnd_max_x + _tol and c.x2 <= _bnd_max_x + _tol
+            and c.y1 >= _bnd_min_y - _tol and c.y2 >= _bnd_min_y - _tol
+            and c.y1 <= _bnd_max_y + _tol and c.y2 <= _bnd_max_y + _tol
+        ]
         newly_accepted = accept_secondary_candidates(staged, structural_supports, rectangles)
         existing_keys = {candidate_duplicate_key(beam) for beam in accepted}
         added = 0
@@ -2090,10 +2082,10 @@ def is_lift_to_lift_beam(beam: BeamPair) -> bool:
 
 def compute_beam_defaults(beam_class: str, wall_thickness_mm: int) -> tuple[int, int]:
     if beam_class == "Edge":
-        return 230, 300
+        return 230, 450
     if wall_thickness_mm > 0:
-        return 230, 225
-    return 375, 150
+        return 230, 375
+    return 230, 375
 
 
 def choose_node_width(primary: list[float] | None, fallback: list[float] | None) -> float:
@@ -2284,9 +2276,16 @@ def secondary_row_values(
         beam_width_mm, beam_depth_mm = SECONDARY_PLINTH_WIDTH_MM, SECONDARY_PLINTH_DEPTH_MM
     else:
         beam_width_mm, beam_depth_mm = typical_width_mm, typical_depth_mm
-    # Plinth depth uplift: take the class-based depth and add 150 mm.
     if floor == "Plinth":
-        beam_depth_mm += 150
+        span_m = end - start
+        if beam.beam_class == "Edge":
+            beam_depth_mm = 300
+        elif span_m <= 4.0:
+            beam_depth_mm = 375
+        elif span_m < 7.0:
+            beam_depth_mm = 450
+        else:
+            beam_depth_mm = 525
 
     return [
         beam.no,
@@ -2304,6 +2303,33 @@ def secondary_row_values(
     ]
 
 
+_TERRACE_PARAPET_EXCLUDE_LOCATIONS: frozenset[str] = frozenset({"lift", "staircase", "shaft"})
+
+
+def beam_overlaps_excluded_zone(
+    beam: BeamPair,
+    rectangles: list[ZoneRectangle],
+    tol_m: float = 0.15,
+) -> bool:
+    for rect in rectangles:
+        if str(rect.location).strip().lower() not in _TERRACE_PARAPET_EXCLUDE_LOCATIONS:
+            continue
+        rx1, rx2 = sorted((rect.x1, rect.x2))
+        ry1, ry2 = sorted((rect.y1, rect.y2))
+        if beam.direction == "X":
+            if not (ry1 - tol_m <= beam.group_coordinate_m <= ry2 + tol_m):
+                continue
+            if overlap_1d(beam.beam_start_x, beam.beam_end_x, rx1, rx2) is None:
+                continue
+        else:
+            if not (rx1 - tol_m <= beam.group_coordinate_m <= rx2 + tol_m):
+                continue
+            if overlap_1d(beam.beam_start_y, beam.beam_end_y, ry1, ry2) is None:
+                continue
+        return True
+    return False
+
+
 def write_output(
     path: Path,
     columns: list[ColumnRecord],
@@ -2316,6 +2342,7 @@ def write_output(
     wall_alignment_tolerance_m: float,
     edge_wall_coverage_threshold_pct: float,
     interior_wall_coverage_threshold_pct: float,
+    rectangles: list[ZoneRectangle] | None = None,
 ) -> None:
     walls_by_floor: dict[str, list[WallSegment]] = {}
     for wall in walls:
@@ -2393,6 +2420,13 @@ def write_output(
         ]
     )
 
+    _x_fixed = [b.group_coordinate_m for b in beams if b.direction == "Y"]
+    _y_fixed = [b.group_coordinate_m for b in beams if b.direction == "X"]
+    _geo_min_x = min(_x_fixed) if _x_fixed else 0.0
+    _geo_max_x = max(_x_fixed) if _x_fixed else 0.0
+    _geo_min_y = min(_y_fixed) if _y_fixed else 0.0
+    _geo_max_y = max(_y_fixed) if _y_fixed else 0.0
+
     for beam in beams:
         typical_walls = walls_by_floor.get("typical", walls if not walls_by_floor else [])
         typical_wall_thickness_mm, _ = compute_wall_assignment(
@@ -2403,7 +2437,7 @@ def write_output(
             interior_wall_coverage_threshold_pct=interior_wall_coverage_threshold_pct,
         )
         if is_lift_to_lift_beam(beam):
-            typical_beam_width_mm, typical_beam_depth_mm = 230, 300
+            typical_beam_width_mm, typical_beam_depth_mm = 230, 450
         else:
             typical_beam_width_mm, typical_beam_depth_mm = compute_beam_defaults(beam.beam_class, typical_wall_thickness_mm)
 
@@ -2418,17 +2452,38 @@ def write_output(
                 interior_wall_coverage_threshold_pct=interior_wall_coverage_threshold_pct,
             )
             if is_lift_to_lift_beam(beam):
-                beam_width_mm, beam_depth_mm = 230, 300
+                beam_width_mm, beam_depth_mm = 230, 450
                 wall_thickness_value = 230
             else:
                 beam_width_mm, beam_depth_mm = typical_beam_width_mm, typical_beam_depth_mm
                 wall_thickness_value = wall_thickness_mm
-            # Plinth depth uplift: take the class-based depth and add 150 mm.
             if floor == "Plinth":
-                beam_depth_mm += 150
-            # Front/Back edge boundary wall = 300 mm on all floors (client rule).
-            if beam.beam_class == "Edge" and beam.direction == "X":
-                wall_thickness_value = 300
+                if beam.beam_class == "Edge":
+                    beam_depth_mm = 300
+                elif beam.span_length_m <= 4.0:
+                    beam_depth_mm = 375
+                elif beam.span_length_m < 7.0:
+                    beam_depth_mm = 450
+                else:
+                    beam_depth_mm = 525
+            else:
+                _tol = DEFAULT_BOUNDARY_TOLERANCE_M
+                _on_boundary = (
+                    beam.direction == "X" and (
+                        abs(beam.group_coordinate_m - _geo_min_y) <= _tol
+                        or abs(beam.group_coordinate_m - _geo_max_y) <= _tol
+                    )
+                ) or (
+                    beam.direction == "Y" and (
+                        abs(beam.group_coordinate_m - _geo_min_x) <= _tol
+                        or abs(beam.group_coordinate_m - _geo_max_x) <= _tol
+                    )
+                )
+                if _on_boundary:
+                    beam_depth_mm = 450
+                    if floor == "Terrace" and wall_thickness_value == 115:
+                        if not beam_overlaps_excluded_zone(beam, rectangles or []):
+                            wall_thickness_value = 40
             wall_coverage_value = raw_wall_coverage_pct
 
             ws_beams.append(
@@ -2622,6 +2677,7 @@ def main() -> None:
         wall_alignment_tolerance_m=args.wall_alignment_tolerance_m,
         edge_wall_coverage_threshold_pct=args.edge_wall_coverage_threshold_pct,
         interior_wall_coverage_threshold_pct=args.interior_wall_coverage_threshold_pct,
+        rectangles=rectangles,
     )
 
     print(f"Column workbook : {input_path}")

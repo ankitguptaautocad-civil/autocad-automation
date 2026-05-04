@@ -28,6 +28,8 @@ SECONDARY_SNAP_TOL_M = 0.15
 EXTRA_WALL_ORTHO_TOL_M = 0.20
 EXTRA_WALL_BEAM_EXCLUDE_TOL_M = 0.30
 EXTRA_WALL_MIN_EXPORT_LENGTH_M = 0.60
+EXTRA_WALL_MIN_FILTERED_LENGTH_M = 2.0
+EXTRA_WALL_BALCONY_MIN_FILTERED_LENGTH_M = 1.0
 EXTRA_WALL_PRESENT_DEFAULTS = {
     "Plinth": ("YES", "chain"),
     "Stilt roof": ("YES", "chain"),
@@ -560,7 +562,7 @@ def write_shear_wall_template_sheet(wb) -> None:
         "wall_function_class",
     ]
     ws.append(headers)
-    widths = [14, 12, 12, 12, 12, 12, 22, 18, 18, 14, 14, 24, 18]
+    widths = [14, 12, 12, 12, 12, 12, 22, 18, 18, 14, 14, 12, 9]
     for idx, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
     for cell in ws[1]:
@@ -803,6 +805,19 @@ def build_harmonized_other_rows(
     balcony_rows = legacy_node.read_and_snap_balconies(geometry_input_path, node_x_vals, node_y_vals, sec_beam_rows=sec_beam_rows)
     staircase_rows = legacy_node.read_staircase_details(geometry_input_path)
     rect_rows, _, balcony_rows, _ = legacy_node.final_level_all(rect_rows, sec_beam_rows, balcony_rows, node_x_vals, node_y_vals)
+    if staircase_rows:
+        _snapped_stair: list[list[object]] = []
+        for _sr in staircase_rows:
+            if len(_sr) >= 5 and all(isinstance(_sr[_i], (int, float)) for _i in range(1, 5)):
+                _r = list(_sr)
+                _r[1] = round(_snap_to_nearest(float(_sr[1]), node_x_vals, SECONDARY_SNAP_TOL_M), 3)
+                _r[2] = round(_snap_to_nearest(float(_sr[2]), node_y_vals, SECONDARY_SNAP_TOL_M), 3)
+                _r[3] = round(_snap_to_nearest(float(_sr[3]), node_x_vals, SECONDARY_SNAP_TOL_M), 3)
+                _r[4] = round(_snap_to_nearest(float(_sr[4]), node_y_vals, SECONDARY_SNAP_TOL_M), 3)
+                _snapped_stair.append(_r)
+            else:
+                _snapped_stair.append(list(_sr))
+        staircase_rows = _snapped_stair
     return rect_rows, balcony_rows, staircase_rows
 
 
@@ -940,8 +955,8 @@ def build_extra_wall_rows(
             counter += 1
 
     if not raw_rows:
-        return None
-    return legacy_node.snap_extra_walls(raw_rows, node_x_vals, node_y_vals, sec_beam_rows=final_secondary_rows)
+        return None, []
+    return legacy_node.snap_extra_walls(raw_rows, node_x_vals, node_y_vals, sec_beam_rows=final_secondary_rows), list(support_segments)
 
 
 def write_other_coordinates_workbook(
@@ -950,6 +965,7 @@ def write_other_coordinates_workbook(
     balcony_rows: list[tuple[object, ...]] | None,
     staircase_rows: list[list[object]] | None,
     ew_rows: list[tuple[object, ...]] | None = None,
+    ew_support_segments: list | None = None,
 ) -> None:
     from openpyxl import Workbook
 
@@ -982,7 +998,9 @@ def write_other_coordinates_workbook(
         for row in rect_rows:
             ws_rect.append(list(row))
         for idx, width in enumerate(widths, start=1):
-            ws_rect.column_dimensions[get_column_letter(idx)].width = width
+            ws_rect.column_dimensions[get_column_letter(idx)].width = width if idx < 7 else round(width * 0.8, 1)
+        for _c in ("C", "D", "E", "F"):
+            ws_rect.column_dimensions[_c].hidden = True
         for row in ws_rect.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -1032,14 +1050,23 @@ def write_other_coordinates_workbook(
             ws_ew.append(list(row))
         for idx, width in enumerate(widths, start=1):
             ws_ew.column_dimensions[get_column_letter(idx)].width = width
+        for _c in ("C", "D", "E", "F"):
+            ws_ew.column_dimensions[_c].hidden = True
         for row in ws_ew.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-        # "Extra walls (filtered)" sheet — this logic moved here from
-        # datadata_updater.py. Keep only rows where Present == "YES" and
-        # Wall thickness is non-empty. Headers & column order match what
-        # datadata_updater used to write into Datadata2.
+        _balcony_rects: list[tuple[float, float, float, float]] = []
+        if rect_rows:
+            for _rr in rect_rows:
+                if str(_rr[6]).strip().lower() == "balcony":
+                    _balcony_rects.append((
+                        min(float(_rr[13]), float(_rr[15])),
+                        max(float(_rr[13]), float(_rr[15])),
+                        min(float(_rr[14]), float(_rr[16])),
+                        max(float(_rr[14]), float(_rr[16])),
+                    ))
+
         valid_ew_rows = []
         for row in ew_rows:
             present = str(row[8]).strip().upper() if row[8] is not None else ""
@@ -1048,6 +1075,34 @@ def write_other_coordinates_workbook(
                 continue
             if thickness in (None, ""):
                 continue
+            sx1, sy1, sx2, sy2 = float(row[10]), float(row[11]), float(row[12]), float(row[13])
+            snapped_length = max(abs(sx2 - sx1), abs(sy2 - sy1))
+            _axis = "X" if abs(sy1 - sy2) < 0.001 else "Y"
+            _fixed = sy1 if _axis == "X" else sx1
+            _span_s = min(sx1, sx2) if _axis == "X" else min(sy1, sy2)
+            _span_e = max(sx1, sx2) if _axis == "X" else max(sy1, sy2)
+            _on_balcony = False
+            for _rx1, _rx2, _ry1, _ry2 in _balcony_rects:
+                _perp_lo, _perp_hi = (_ry1, _ry2) if _axis == "X" else (_rx1, _rx2)
+                _par_lo, _par_hi = (_rx1, _rx2) if _axis == "X" else (_ry1, _ry2)
+                if _perp_lo - 0.15 <= _fixed <= _perp_hi + 0.15 and min(_span_e, _par_hi) > max(_span_s, _par_lo):
+                    _on_balcony = True
+                    break
+            _min_len = EXTRA_WALL_BALCONY_MIN_FILTERED_LENGTH_M if _on_balcony else EXTRA_WALL_MIN_FILTERED_LENGTH_M
+            if snapped_length < _min_len:
+                continue
+            if ew_support_segments:
+                on_beam = False
+                for seg in ew_support_segments:
+                    if seg.axis != _axis or abs(seg.fixed - _fixed) > EXTRA_WALL_BEAM_EXCLUDE_TOL_M:
+                        continue
+                    lo = max(_span_s, seg.start)
+                    hi = min(_span_e, seg.end)
+                    if hi - lo >= max(0.50, 0.60 * snapped_length):
+                        on_beam = True
+                        break
+                if on_beam:
+                    continue
             valid_ew_rows.append(row)
 
         if valid_ew_rows:
@@ -1416,6 +1471,8 @@ def write_final_secondary_sheet(wb, rows: list[list[object]]) -> tuple[list[floa
     }
     for column_letter, width in autosize.items():
         ws.column_dimensions[column_letter].width = width
+    for _c in ("C", "D", "E", "F", "G", "I"):
+        ws.column_dimensions[_c].hidden = True
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -1584,7 +1641,7 @@ def main() -> None:
             node_y_vals,
             sec_beam_rows=final_secondary_rows,
         )
-        ew_rows = build_extra_wall_rows(
+        ew_rows, ew_support_segs = build_extra_wall_rows(
             unfiltered,
             legacy_node,
             wall_path,
@@ -1594,7 +1651,7 @@ def main() -> None:
             leveled_nodes,
             final_secondary_rows,
         )
-        write_other_coordinates_workbook(other_output_path, rect_rows, balcony_rows, staircase_rows, ew_rows=ew_rows)
+        write_other_coordinates_workbook(other_output_path, rect_rows, balcony_rows, staircase_rows, ew_rows=ew_rows, ew_support_segments=ew_support_segs)
     else:
         final_secondary_rows = build_final_secondary_rows(raw_secondary_rows, leveled_nodes, [], [])
 
@@ -1603,6 +1660,8 @@ def main() -> None:
         del wb["Node spacing review"]
     prune_main_workbook(wb)
     align_new_headers(ws_cols, ws_beams, wb[SHEAR_WALL_TEMPLATE_SHEET], wb[COLUMN_LANDSCAPE_TEMPLATE_SHEET])
+    for _col_letter in ("C", "D", "E", "F", "G", "H", "M", "N"):
+        ws_cols.column_dimensions[_col_letter].hidden = True
     wb.save(output_path)
 
     print(f"Input workbook  : {input_path}")

@@ -368,45 +368,23 @@ def is_near_integer(value: float, tolerance: float) -> bool:
     return abs(value - round(value)) <= tolerance
 
 
-def _is_structural_size(rect: Rect, mm_per_unit: float) -> bool:
-    """Check if rectangle dimensions are within reasonable column/shear-wall range (100-2000mm)."""
-    MIN_STRUCTURAL_MM = 100.0
-    MAX_STRUCTURAL_MM = 2000.0
-    w_mm = rect.width * mm_per_unit
-    h_mm = rect.height * mm_per_unit
-    return MIN_STRUCTURAL_MM <= w_mm <= MAX_STRUCTURAL_MM and MIN_STRUCTURAL_MM <= h_mm <= MAX_STRUCTURAL_MM
-
-
 def filter_rects(
     rects: list[Rect],
     hatch_boxes: list[Rect],
     inch_multiple_tolerance: float,
     hatch_overlap_tolerance: float,
-    mm_per_unit: float = DEFAULT_MM_PER_UNIT,
 ) -> list[Rect]:
     require_hatch = bool(hatch_boxes)
     filtered: list[Rect] = []
-    dropped: list[Rect] = []
     for rect in rects:
         if inch_multiple_tolerance > 0:
             if not is_near_integer(rect.width, inch_multiple_tolerance):
-                dropped.append(rect)
                 continue
             if not is_near_integer(rect.height, inch_multiple_tolerance):
-                dropped.append(rect)
                 continue
         if require_hatch and not any(rects_overlap(rect, hatch_box, hatch_overlap_tolerance) for hatch_box in hatch_boxes):
             continue
         filtered.append(rect)
-
-    # Auto-rescue: dropped by inch filter but structurally valid size → include
-    if dropped:
-        for rect in dropped:
-            if _is_structural_size(rect, mm_per_unit):
-                if require_hatch and not any(rects_overlap(rect, hatch_box, hatch_overlap_tolerance) for hatch_box in hatch_boxes):
-                    continue  # hatch filter still applies
-                filtered.append(rect)
-
     return dedupe_rects(filtered)
 
 
@@ -416,11 +394,10 @@ def extract_filtered_rects_from_layout(
     column_hatch_layer: str | None,
     inch_multiple_tolerance: float,
     hatch_overlap_tolerance: float,
-    mm_per_unit: float = DEFAULT_MM_PER_UNIT,
 ) -> list[Rect]:
     rects = extract_rects_from_layout(layout, column_layer)
     hatch_boxes = extract_hatch_boxes_from_layout(layout, column_hatch_layer)
-    return filter_rects(rects, hatch_boxes, inch_multiple_tolerance, hatch_overlap_tolerance, mm_per_unit)
+    return filter_rects(rects, hatch_boxes, inch_multiple_tolerance, hatch_overlap_tolerance)
 
 
 def find_candidates(
@@ -429,7 +406,6 @@ def find_candidates(
     column_hatch_layer: str | None,
     inch_multiple_tolerance: float,
     hatch_overlap_tolerance: float,
-    mm_per_unit: float = DEFAULT_MM_PER_UNIT,
 ) -> list[BlockCandidate]:
     insert_counts = extract_insert_names_from_doc(doc)
     candidates: list[BlockCandidate] = []
@@ -443,7 +419,6 @@ def find_candidates(
             column_hatch_layer,
             inch_multiple_tolerance,
             hatch_overlap_tolerance,
-            mm_per_unit,
         )
         if rects:
             candidates.append(BlockCandidate(block_name, insert_counts.get(block_name, 0), rects))
@@ -453,7 +428,6 @@ def find_candidates(
         column_hatch_layer,
         inch_multiple_tolerance,
         hatch_overlap_tolerance,
-        mm_per_unit,
     )
     if modelspace_rects:
         candidates.append(BlockCandidate(MODELSPACE_CANDIDATE_NAME, 0, modelspace_rects))
@@ -501,8 +475,10 @@ def select_candidate(
     )
 
 
-def order_rects(rects: list[Rect], row_tolerance_units: float) -> tuple[Rect, list[Rect]]:
-    anchor = min(rects, key=lambda r: (r.ymin, r.xmin))
+def order_rects(rects: list[Rect], row_tolerance_units: float, anchor_ymin_tolerance: float = 0.1) -> tuple[Rect, list[Rect]]:
+    min_ymin = min(r.ymin for r in rects)
+    bottom_candidates = [r for r in rects if r.ymin <= min_ymin + anchor_ymin_tolerance]
+    anchor = min(bottom_candidates, key=lambda r: r.xmin)
     by_center = sorted(rects, key=lambda r: (r.cy, r.xmin, r.ymin))
     rows: list[list[Rect]] = []
     row_centerlines: list[float] = []
@@ -625,7 +601,6 @@ def main() -> None:
         args.column_hatch_layer,
         args.inch_multiple_tolerance,
         args.hatch_overlap_tolerance,
-        args.mm_per_unit,
     )
     candidate = select_candidate(candidates, args.block_name, args.target_rect_count)
     row_tolerance_units = args.row_tolerance_mm / args.mm_per_unit

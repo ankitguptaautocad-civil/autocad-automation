@@ -106,6 +106,20 @@ def localize_walls(walls: list[wall_v2.WallRect], anchor: base.Rect, mm_per_unit
     return local_walls
 
 
+def find_insert_offset(doc: ezdxf.EzDxf, block_name: str) -> tuple[float, float]:
+    for entity in doc.modelspace():
+        if entity.dxftype() == "INSERT" and entity.dxf.name == block_name:
+            return entity.dxf.insert.x, entity.dxf.insert.y
+    return 0.0, 0.0
+
+
+def shift_walls(walls: list[wall_v2.WallRect], ox: float, oy: float) -> list[wall_v2.WallRect]:
+    return [
+        wall_v2.WallRect(xmin=w.xmin - ox, xmax=w.xmax - ox, ymin=w.ymin - oy, ymax=w.ymax - oy, source=w.source)
+        for w in walls
+    ]
+
+
 def wall_face_values(local_walls: list[LocalWall]) -> tuple[list[float], list[float]]:
     x_faces: list[float] = []
     y_faces: list[float] = []
@@ -658,6 +672,32 @@ def extract_floor_artifacts(
         column_rects=ordered_rects,
         column_overlap_ratio=args.column_overlap_ratio,
     )
+    if not primary_walls and not fallback_walls and candidate.name != base.MODELSPACE_CANDIDATE_NAME:
+        ms_body = wall_v2.get_block_body(pairs, base.MODELSPACE_CANDIDATE_NAME)
+        ox, oy = find_insert_offset(doc, candidate.name)
+        ms_col_rects = [base.Rect(r.xmin + ox, r.xmax + ox, r.ymin + oy, r.ymax + oy) for r in ordered_rects]
+        ms_h, ms_v = wall_v2.extract_wall_lines(ms_body, args.wall_line_layer, args.axis_angle_tolerance_deg)
+        ms_primary = wall_v2.extract_from_wall_line_pairs(
+            horizontal_lines=ms_h,
+            vertical_lines=ms_v,
+            allowed_thicknesses=allowed_thicknesses,
+            wall_thickness_tolerance=wall_thickness_tolerance,
+            min_wall_length=min_wall_length,
+            column_rects=ms_col_rects,
+            column_overlap_ratio=args.column_overlap_ratio,
+        )
+        ms_fallback = wall_v2.extract_from_hatch_fallback(
+            block_body=ms_body,
+            hatch_layer=args.hatch_layer,
+            allowed_thicknesses=allowed_thicknesses,
+            wall_thickness_tolerance=wall_thickness_tolerance,
+            min_wall_length=min_wall_length,
+            column_rects=ms_col_rects,
+            column_overlap_ratio=args.column_overlap_ratio,
+        )
+        primary_walls = shift_walls(ms_primary, ox, oy)
+        fallback_walls = shift_walls(ms_fallback, ox, oy)
+
     ordered_walls = wall_v2.order_walls(
         wall_v2.combine_primary_and_fallback(
             primary_walls=primary_walls,
