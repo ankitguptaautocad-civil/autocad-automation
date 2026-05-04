@@ -17,6 +17,7 @@ DEFAULT_INPUT_PATH = None
 DEFAULT_OUTPUT_PATH = None
 DEFAULT_WALL_INPUT_PATH = None
 DEFAULT_GEOMETRY_INPUT_PATH = None
+DEFAULT_DXF_COLUMNS_INPUT_PATH = None
 DEFAULT_NODE_LEVEL_TOLERANCE_M = 0.60
 NODE_SOURCE_FLOOR = "Typical floor roof"
 RAW_SECONDARY_SHEETS = ("Secondary beam coordinates_plin", "Secondary beam coordinates_nonp")
@@ -141,6 +142,51 @@ def resolve_geometry_workbook(explicit_geometry: Path | None) -> Path:
     )
 
 
+def resolve_dxf_columns_workbook(explicit_path: Path | None) -> Path:
+    if explicit_path is not None:
+        path = explicit_path.resolve()
+        if not path.exists():
+            raise SystemExit(f"DXF column rectangles workbook not found: {path}")
+        return path
+    return discover_single_workbook(
+        ("*_col_rectangles_m_v2_wall_assisted.xlsx",),
+        "DXF column rectangles",
+    )
+
+
+def load_dxf_column_geometry(path: Path) -> dict[int, dict[str, float]]:
+    wb = load_workbook(path, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    header_map = {normalize_header(str(v or "")): idx for idx, v in enumerate(headers)}
+    required = {
+        "columnno": "Column No",
+        "xminm": "Xmin (m)",
+        "xmaxm": "Xmax (m)",
+        "yminm": "Ymin (m)",
+        "ymaxm": "Ymax (m)",
+    }
+    missing = [label for key, label in required.items() if key not in header_map]
+    if missing:
+        raise SystemExit(f"DXF column rectangles workbook missing headers: {', '.join(missing)}")
+    geometry: dict[int, dict[str, float]] = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if all(v in (None, "") for v in row):
+            continue
+        col_no_raw = row[header_map["columnno"]]
+        text = str(col_no_raw or "").strip()
+        col_no = int(text[1:]) if text.upper().startswith("C") and text[1:].isdigit() else (int(text) if text.isdigit() else -1)
+        if col_no < 0:
+            continue
+        geometry[col_no] = {
+            "xmin": round(float(row[header_map["xminm"]]), 3),
+            "xmax": round(float(row[header_map["xmaxm"]]), 3),
+            "ymin": round(float(row[header_map["yminm"]]), 3),
+            "ymax": round(float(row[header_map["ymaxm"]]), 3),
+        }
+    return geometry
+
+
 def load_unfiltered_module():
     module_path = (Path(__file__).parent / "Unfiltered column coordinates generator.py").resolve()
     spec = importlib.util.spec_from_file_location("unfiltered_generator_runtime", module_path)
@@ -174,20 +220,22 @@ def parse_column_number(raw_value: object, fallback_idx: int) -> int:
     return fallback_idx
 
 
-def load_columns(ws) -> tuple[list[ColumnRecord], dict[str, int]]:
+def _select_anchor(min_val: float, max_val: float, tag: str) -> float:
+    if tag in {"Left", "Front"}:
+        return round(min_val, 3)
+    if tag in {"Right", "Back"}:
+        return round(max_val, 3)
+    return round((min_val + max_val) / 2.0, 3)
+
+
+def load_columns(ws, dxf_geometry: dict[int, dict[str, float]]) -> tuple[list[ColumnRecord], dict[str, int]]:
     headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
     header_map = {normalize_header(value): idx for idx, value in enumerate(headers)}
     required = {
         "columnno": "Column No.",
         "type": "Type",
-        "xminm": "Xmin (m)",
-        "xmaxm": "Xmax (m)",
-        "yminm": "Ymin (m)",
-        "ymaxm": "Ymax (m)",
         "leftright": "Left/Right",
         "frontback": "Front/Back",
-        "anchorxm": "Anchor X (m)",
-        "anchorym": "Anchor Y (m)",
     }
     missing = [label for key, label in required.items() if key not in header_map]
     if missing:
@@ -198,19 +246,28 @@ def load_columns(ws) -> tuple[list[ColumnRecord], dict[str, int]]:
         if all(value in (None, "") for value in row):
             continue
         idx = parse_column_number(row[header_map["columnno"]], len(rows) + 1)
+        left_right = str(row[header_map["leftright"]] or "").strip().title()
+        front_back = str(row[header_map["frontback"]] or "").strip().title()
+        geo = dxf_geometry.get(idx, {})
+        xmin = geo.get("xmin", 0.0)
+        xmax = geo.get("xmax", 0.0)
+        ymin = geo.get("ymin", 0.0)
+        ymax = geo.get("ymax", 0.0)
+        anchor_x = _select_anchor(xmin, xmax, left_right)
+        anchor_y = _select_anchor(ymin, ymax, front_back)
         rows.append(
             ColumnRecord(
                 row_idx=row_idx,
                 column_no=idx,
                 type_name=str(row[header_map["type"]]).strip(),
-                xmin=float(row[header_map["xminm"]]),
-                xmax=float(row[header_map["xmaxm"]]),
-                ymin=float(row[header_map["yminm"]]),
-                ymax=float(row[header_map["ymaxm"]]),
-                left_right=str(row[header_map["leftright"]]).strip().title(),
-                front_back=str(row[header_map["frontback"]]).strip().title(),
-                anchor_x=float(row[header_map["anchorxm"]]),
-                anchor_y=float(row[header_map["anchorym"]]),
+                xmin=xmin,
+                xmax=xmax,
+                ymin=ymin,
+                ymax=ymax,
+                left_right=left_right,
+                front_back=front_back,
+                anchor_x=anchor_x,
+                anchor_y=anchor_y,
                 location=str(row[header_map["location"]]).strip() if "location" in header_map and row[header_map["location"]] not in (None, "") else "",
                 anchor_location=str(row[header_map["anchorlocation"]]).strip() if "anchorlocation" in header_map and row[header_map["anchorlocation"]] not in (None, "") else "",
                 orientation=str(row[header_map["orientation"]]).strip() if "orientation" in header_map and row[header_map["orientation"]] not in (None, "") else "",
@@ -977,10 +1034,6 @@ def write_other_coordinates_workbook(
         headers = [
             "No.",
             "Type",
-            "Coordinate X1 (m)",
-            "Coordinate Y1 (m)",
-            "Coordinate X2 (m)",
-            "Coordinate Y2 (m)",
             "Location",
             "Anchor location 1",
             "Beam X width location 1",
@@ -993,14 +1046,13 @@ def write_other_coordinates_workbook(
             "Snapped X2 (m)",
             "Snapped Y2 (m)",
         ]
-        widths = [6, 8, 18, 18, 18, 18, 16, 16, 20, 20, 16, 20, 20, 18, 18, 18, 18]
+        widths = [6, 8, 16, 16, 20, 20, 16, 20, 20, 18, 18, 18, 18]
+        _skip_raw = {2, 3, 4, 5}
         ws_rect.append(headers)
         for row in rect_rows:
-            ws_rect.append(list(row))
+            ws_rect.append([v for i, v in enumerate(row) if i not in _skip_raw])
         for idx, width in enumerate(widths, start=1):
-            ws_rect.column_dimensions[get_column_letter(idx)].width = width if idx < 7 else round(width * 0.8, 1)
-        for _c in ("C", "D", "E", "F"):
-            ws_rect.column_dimensions[_c].hidden = True
+            ws_rect.column_dimensions[get_column_letter(idx)].width = width if idx <= 2 else round(width * 0.8, 1)
         for row in ws_rect.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -1031,10 +1083,6 @@ def write_other_coordinates_workbook(
         headers = [
             "No.",
             "Type",
-            "Coordinate X1 (m)",
-            "Coordinate Y1 (m)",
-            "Coordinate X2 (m)",
-            "Coordinate Y2 (m)",
             "Wall location",
             "Floor",
             "Present",
@@ -1044,14 +1092,13 @@ def write_other_coordinates_workbook(
             "Snapped X2 (m)",
             "Snapped Y2 (m)",
         ]
-        widths = [6, 8, 18, 18, 18, 18, 16, 16, 10, 18, 18, 18, 18, 18]
+        widths = [6, 8, 16, 16, 10, 18, 18, 18, 18, 18]
+        _skip_raw_ew = {2, 3, 4, 5}
         ws_ew.append(headers)
         for row in ew_rows:
-            ws_ew.append(list(row))
+            ws_ew.append([v for i, v in enumerate(row) if i not in _skip_raw_ew])
         for idx, width in enumerate(widths, start=1):
             ws_ew.column_dimensions[get_column_letter(idx)].width = width
-        for _c in ("C", "D", "E", "F"):
-            ws_ew.column_dimensions[_c].hidden = True
         for row in ws_ew.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -1442,13 +1489,7 @@ def write_final_secondary_sheet(wb, rows: list[list[object]]) -> tuple[list[floa
         [
             "No.",
             "Type",
-            "Coordinate X1 (m)",
-            "Coordinate Y1 (m)",
-            "Coordinate X2 (m)",
-            "Coordinate Y2 (m)",
-            "Beam location",
             "Floor",
-            "Present",
             "Beam width (mm)",
             "Beam depth (mm)",
             "Wall thickness (mm)",
@@ -1458,21 +1499,20 @@ def write_final_secondary_sheet(wb, rows: list[list[object]]) -> tuple[list[floa
             "Snapped Y2 (m)",
         ]
     )
+    _skip_sec = {2, 3, 4, 5, 6, 8}
     xs: list[float] = []
     ys: list[float] = []
     for row in rows:
-        ws.append(row)
+        ws.append([v for i, v in enumerate(row) if i not in _skip_sec])
         xs.extend([float(row[12]), float(row[14])])
         ys.extend([float(row[13]), float(row[15])])
     for cell in ws[1]:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     autosize = {
-        "A": 7, "B": 8, "G": 11, "H": 18, "I": 10, "J": 10, "K": 10, "L": 10, "M": 12, "N": 12, "O": 12, "P": 12,
+        "A": 7, "B": 8, "C": 18, "D": 10, "E": 10, "F": 10, "G": 12, "H": 12, "I": 12, "J": 12,
     }
     for column_letter, width in autosize.items():
         ws.column_dimensions[column_letter].width = width
-    for _c in ("C", "D", "E", "F", "G", "I"):
-        ws.column_dimensions[_c].hidden = True
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -1547,6 +1587,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional floor/nonplinth geometry workbook containing Rectangle/Balcony/Staircase sheets.",
     )
     parser.add_argument(
+        "--dxf-columns",
+        type=Path,
+        default=DEFAULT_DXF_COLUMNS_INPUT_PATH,
+        help="DXF column rectangles workbook (*_col_rectangles_m_v2_wall_assisted.xlsx). Used to read column bounding-box geometry for anchor computation.",
+    )
+    parser.add_argument(
         "--level-tolerance-m",
         type=float,
         default=DEFAULT_NODE_LEVEL_TOLERANCE_M,
@@ -1560,10 +1606,13 @@ def main() -> None:
     input_path = resolve_input_workbook(args.input)
     wall_path = resolve_wall_workbook(args.walls)
     geometry_input_path = resolve_geometry_workbook(args.geometry_input)
+    dxf_columns_path = resolve_dxf_columns_workbook(args.dxf_columns)
     output_path = args.output.resolve() if args.output else input_path.parent / f"node_coordinates_{_dt.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     other_output_path = build_other_output_path(output_path)
     unfiltered = load_unfiltered_module()
     legacy_node = load_legacy_node_module()
+
+    dxf_geometry = load_dxf_column_geometry(dxf_columns_path)
 
     wb = load_workbook(input_path)
     if "Columns" not in wb.sheetnames or "Primary Beams" not in wb.sheetnames:
@@ -1572,7 +1621,7 @@ def main() -> None:
     ws_cols = wb["Columns"]
     ws_beams = wb["Primary Beams"]
 
-    columns, _ = load_columns(ws_cols)
+    columns, _ = load_columns(ws_cols, dxf_geometry)
     raw_secondary_rows = load_raw_secondary_rows(wb)
     x_beam_widths_by_column, y_beam_widths_by_column, beam_header_map = collect_beam_widths(ws_beams)
     primary_beam_rows = load_primary_beam_rows(ws_beams, beam_header_map)
@@ -1660,13 +1709,12 @@ def main() -> None:
         del wb["Node spacing review"]
     prune_main_workbook(wb)
     align_new_headers(ws_cols, ws_beams, wb[SHEAR_WALL_TEMPLATE_SHEET], wb[COLUMN_LANDSCAPE_TEMPLATE_SHEET])
-    for _col_letter in ("C", "D", "E", "F", "G", "H", "M", "N"):
-        ws_cols.column_dimensions[_col_letter].hidden = True
     wb.save(output_path)
 
     print(f"Input workbook  : {input_path}")
     print(f"Wall workbook   : {wall_path}")
     print(f"Geometry source : {geometry_input_path}")
+    print(f"DXF columns     : {dxf_columns_path}")
     print(f"Output workbook : {output_path}")
     if legacy_node is None:
         print("Other workbook  : skipped (legacy node geometry helper missing)")

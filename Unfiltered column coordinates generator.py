@@ -14,7 +14,7 @@ DEFAULT_WALL_INPUT_PATH = None
 DEFAULT_OUTPUT_PATH = None
 DEFAULT_GROUP_TOLERANCE_M = 0.75
 DEFAULT_BOUNDARY_TOLERANCE_M = 0.75
-DEFAULT_WALL_ALIGNMENT_TOLERANCE_M = 0.50
+DEFAULT_WALL_ALIGNMENT_TOLERANCE_M = 0.65
 DEFAULT_EDGE_WALL_COVERAGE_THRESHOLD_PCT = 10.0
 DEFAULT_INTERIOR_WALL_COVERAGE_THRESHOLD_PCT = 30.0
 DEFAULT_THICKNESS_TOLERANCE_MM = 40.0
@@ -45,7 +45,7 @@ SECONDARY_ZONE_INTERIOR_TOL_M = 0.15
 SECONDARY_R1_MAX_SPAN_M = 2.5
 SECONDARY_R1_ZONE_PROXIMITY_M = 1.5
 SECONDARY_R4_END_EXTENSION_M = 0.45
-SECONDARY_R4_STRONG_WALL_LENGTH_M = 3.0
+SECONDARY_R4_STRONG_WALL_LENGTH_M = 2.0
 SECONDARY_R5_SUPPORT_TOL_M = 0.05
 SECONDARY_R5_EDGE_ALIGN_TOL_M = 0.20
 SECONDARY_PLINTH_WIDTH_MM = 230
@@ -550,18 +550,14 @@ def read_zone_rectangles(path: Path | None) -> tuple[list[ZoneRectangle], dict[s
         extra_sheets["Rectangle coordinates"] = [tuple(cell.value for cell in row) for row in ws.iter_rows(values_only=False)]
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
         header_map = {normalize_header(str(value or "")): idx for idx, value in enumerate(header_row)}
-        required = {
-            "no": "No.",
-            "type": "Type",
-            "coordinatex1m": "Coordinate X1 (m)",
-            "coordinatey1m": "Coordinate Y1 (m)",
-            "coordinatex2m": "Coordinate X2 (m)",
-            "coordinatey2m": "Coordinate Y2 (m)",
-            "location": "Location",
-        }
+        required = {"no": "No.", "type": "Type", "location": "Location"}
         missing = [label for key, label in required.items() if key not in header_map]
+        has_snapped_coords = all(k in header_map for k in ("snappedx1m", "snappedy1m", "snappedx2m", "snappedy2m"))
+        has_raw_coords = all(k in header_map for k in ("coordinatex1m", "coordinatey1m", "coordinatex2m", "coordinatey2m"))
         if missing:
             raise SystemExit(f"Rectangle coordinates sheet is missing required headers: {', '.join(missing)}")
+        if not has_snapped_coords and not has_raw_coords:
+            raise SystemExit("Rectangle coordinates sheet missing coordinate headers (need Snapped X1/Y1/X2/Y2 or Coordinate X1/Y1/X2/Y2)")
 
         for row in ws.iter_rows(min_row=2, values_only=True):
             if all(value in (None, "") for value in row):
@@ -1111,6 +1107,49 @@ def merge_wall_chains(walls: list[WallSegment]) -> list[WallChain]:
     return sorted(chains, key=lambda chain: (chain.axis, chain.fixed, chain.start, chain.end))
 
 
+def find_wall_bracket_supports(
+    axis: str,
+    fixed: float,
+    start: float,
+    end: float,
+    support_segments: list[SupportSegment],
+    column_points: list[tuple[str, float, float]],
+    tolerance_m: float = SECONDARY_SUPPORT_TOL_M,
+) -> tuple[float, float] | None:
+    """Find the nearest perpendicular structural supports that bracket a wall chain.
+    Searches for crossing beams and column nodes, not just parallel beams."""
+    perp_axis = "Y" if axis == "X" else "X"
+    left_vals: list[float] = []
+    right_vals: list[float] = []
+    for segment in support_segments:
+        if segment.axis == perp_axis:
+            if not (segment.start - tolerance_m <= fixed <= segment.end + tolerance_m):
+                continue
+            if segment.fixed <= start + tolerance_m:
+                left_vals.append(segment.fixed)
+            if segment.fixed >= end - tolerance_m:
+                right_vals.append(segment.fixed)
+        elif segment.axis == axis and abs(segment.fixed - fixed) <= tolerance_m:
+            if segment.start - tolerance_m <= start <= segment.end + tolerance_m:
+                left_vals.append(start)
+            if segment.start - tolerance_m <= end <= segment.end + tolerance_m:
+                right_vals.append(end)
+    for _, cx, cy in column_points:
+        coord, perp = (cx, cy) if axis == "X" else (cy, cx)
+        if abs(perp - fixed) <= tolerance_m:
+            if coord <= start + tolerance_m:
+                left_vals.append(coord)
+            if coord >= end - tolerance_m:
+                right_vals.append(coord)
+    if not left_vals or not right_vals:
+        return None
+    left_bracket = max(left_vals)
+    right_bracket = min(right_vals)
+    if right_bracket - left_bracket < SECONDARY_MIN_SPAN_M:
+        return None
+    return round(left_bracket, 3), round(right_bracket, 3)
+
+
 def find_bracketing_supports(
     axis: str,
     fixed: float,
@@ -1303,6 +1342,8 @@ def candidate_crosses_zone(candidate: SecondaryBeamCandidate, rectangles: list[Z
         return False
     fixed, start, end = axis_major_values(candidate.axis, candidate.x1, candidate.y1, candidate.x2, candidate.y2)
     for rect in rectangles:
+        if str(rect.location).strip().lower() == "mumty":
+            continue
         x1, x2 = sorted((rect.x1, rect.x2))
         y1, y2 = sorted((rect.y1, rect.y2))
         if candidate.axis == "X":
@@ -1511,6 +1552,8 @@ def generate_r5_zone_perimeter(
 ) -> list[SecondaryBeamCandidate]:
     candidates: list[SecondaryBeamCandidate] = []
     for rect in rectangles:
+        if str(rect.location).strip().lower() == "mumty":
+            continue
         x1, x2 = sorted((rect.x1, rect.x2))
         y1, y2 = sorted((rect.y1, rect.y2))
         edges = [
@@ -1638,6 +1681,28 @@ def generate_r1_shape_closure(
             return
         if candidate_is_internal_split(candidate, closed_rectangles):
             return
+        # Fallback: catch internal splits that enumerate_closed_rectangles misses due to
+        # corner-registration edge cases. If parallel supports exist on both sides of this
+        # candidate covering the same span, AND the perpendicular caps close the rectangle,
+        # this candidate is an unnecessary internal split of an already-framed panel.
+        _ep = SECONDARY_DUPLICATE_ENDPOINT_TOL_M
+        _wall_axis = axis
+        _cap_axis = "X" if axis == "Y" else "Y"
+        _left_walls = [
+            seg.fixed for seg in support_segments
+            if seg.axis == _wall_axis and seg.fixed < fixed - SECONDARY_SUPPORT_TOL_M
+            and seg.start <= start + _ep and seg.end >= end - _ep
+        ]
+        _right_walls = [
+            seg.fixed for seg in support_segments
+            if seg.axis == _wall_axis and seg.fixed > fixed + SECONDARY_SUPPORT_TOL_M
+            and seg.start <= start + _ep and seg.end >= end - _ep
+        ]
+        if _left_walls and _right_walls:
+            _lb, _rb = max(_left_walls), min(_right_walls)
+            if (support_side_exists(_cap_axis, start, _lb, _rb, support_segments) and
+                    support_side_exists(_cap_axis, end, _lb, _rb, support_segments)):
+                return
         key = candidate_duplicate_key(candidate)
         if key in seen_keys:
             return
@@ -1793,19 +1858,19 @@ def generate_r4_wall_support(
         if chain_near_zone_interior_projection(chain, rectangles):
             continue
         if floor_group == "plinth":
-            support_start, support_end = clip_wall_support_extent(chain.axis, chain.fixed, chain.start, chain.end, column_points, structural_supports)
+            extents = find_wall_bracket_supports(chain.axis, chain.fixed, chain.start, chain.end, structural_supports, column_points)
         else:
             extents = find_bracketing_supports(chain.axis, chain.fixed, chain.start, chain.end, column_points, structural_supports)
-            if extents is None:
-                continue
-            support_start, support_end = extents
-            ext_left = round(chain.start - support_start, 3)
-            ext_right = round(support_end - chain.end, 3)
-            total_span = round(support_end - support_start, 3)
-            if max(ext_left, ext_right) > 2.5:
-                continue
-            if total_span > (chain.length * 1.8):
-                continue
+        if extents is None:
+            continue
+        support_start, support_end = extents
+        ext_left = round(chain.start - support_start, 3)
+        ext_right = round(support_end - chain.end, 3)
+        total_span = round(support_end - support_start, 3)
+        if max(ext_left, ext_right) > 4.0:
+            continue
+        if total_span > (chain.length * 2.5):
+            continue
         if support_end - support_start < min_length_m:
             continue
         if chain.axis == "X":
@@ -1956,7 +2021,7 @@ def accept_secondary_candidates(
     ordered = sorted(candidates, key=lambda cand: (SECONDARY_RULE_PRIORITY[cand.rule_code], -cand.score, cand.detail))
     for candidate in ordered:
         fixed, start, end = axis_major_values(candidate.axis, candidate.x1, candidate.y1, candidate.x2, candidate.y2)
-        if end - start < SECONDARY_MIN_SPAN_M:
+        if candidate.rule_code != "R1" and end - start < SECONDARY_MIN_SPAN_M:
             continue
         if candidate_is_duplicate(candidate, supports):
             continue
@@ -2306,13 +2371,35 @@ def secondary_row_values(
 _TERRACE_PARAPET_EXCLUDE_LOCATIONS: frozenset[str] = frozenset({"lift", "staircase", "shaft"})
 
 
+def shaft_is_adjacent_to_lift_or_staircase(
+    shaft_rect: ZoneRectangle,
+    all_rects: list[ZoneRectangle],
+    adjacency_tol_m: float = 0.5,
+) -> bool:
+    sx1, sx2 = sorted((shaft_rect.x1, shaft_rect.x2))
+    sy1, sy2 = sorted((shaft_rect.y1, shaft_rect.y2))
+    for rect in all_rects:
+        if str(rect.location).strip().lower() not in {"lift", "staircase"}:
+            continue
+        rx1, rx2 = sorted((rect.x1, rect.x2))
+        ry1, ry2 = sorted((rect.y1, rect.y2))
+        x_gap = max(0.0, max(sx1, rx1) - min(sx2, rx2))
+        y_gap = max(0.0, max(sy1, ry1) - min(sy2, ry2))
+        if x_gap <= adjacency_tol_m and y_gap <= adjacency_tol_m:
+            return True
+    return False
+
+
 def beam_overlaps_excluded_zone(
     beam: BeamPair,
     rectangles: list[ZoneRectangle],
     tol_m: float = 0.15,
 ) -> bool:
     for rect in rectangles:
-        if str(rect.location).strip().lower() not in _TERRACE_PARAPET_EXCLUDE_LOCATIONS:
+        loc = str(rect.location).strip().lower()
+        if loc not in _TERRACE_PARAPET_EXCLUDE_LOCATIONS:
+            continue
+        if loc == "shaft" and not shaft_is_adjacent_to_lift_or_staircase(rect, rectangles):
             continue
         rx1, rx2 = sorted((rect.x1, rect.x2))
         ry1, ry2 = sorted((rect.y1, rect.y2))
@@ -2356,19 +2443,10 @@ def write_output(
         [
             "Column No.",
             "Type",
-            "Xmin (m)",
-            "Xmax (m)",
-            "Ymin (m)",
-            "Ymax (m)",
-            "Width (m)",
-            "Height (m)",
             "Left/Right",
             "Front/Back",
             "Location",
             "Anchor location",
-            "Anchor X (m)",
-            "Anchor Y (m)",
-            "Orientation",
         ]
     )
 
@@ -2377,19 +2455,10 @@ def write_output(
             [
                 column.idx,
                 column.type_name,
-                column.xmin,
-                column.xmax,
-                column.ymin,
-                column.ymax,
-                column.width,
-                column.height,
                 column.left_right,
                 column.front_back,
                 column.location,
                 column.anchor_location,
-                column.anchor_x,
-                column.anchor_y,
-                column.orientation,
             ]
         )
 

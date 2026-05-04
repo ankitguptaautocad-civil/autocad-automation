@@ -28,10 +28,6 @@ EPS = 1e-9
 @dataclass(frozen=True)
 class ColumnRect:
     type_name: str
-    xmin: float
-    xmax: float
-    ymin: float
-    ymax: float
     location: str
     node_x: float = 0.0
     node_y: float = 0.0
@@ -113,12 +109,14 @@ def discover_single_workbook(patterns: tuple[str, ...], label: str) -> Path:
     for folder in candidate_search_dirs():
         for pattern in patterns:
             matches.extend(path.resolve() for path in folder.glob(pattern) if not path.name.startswith("~$"))
-    unique_matches = sorted(set(matches))
+    unique_matches = list(set(matches))
     if not unique_matches:
         raise SystemExit(f"Could not find the {label} workbook. Pass it explicitly.")
     if len(unique_matches) > 1:
-        names = ", ".join(path.name for path in unique_matches)
-        raise SystemExit(f"Multiple {label} workbooks found: {names}. Pass the path explicitly.")
+        chosen = max(unique_matches, key=lambda p: p.stat().st_mtime)
+        others = ", ".join(path.name for path in unique_matches if path != chosen)
+        print(f"[INFO] Multiple {label} workbooks found; using latest: {chosen.name} (skipped: {others})")
+        return chosen
     return unique_matches[0]
 
 
@@ -161,19 +159,14 @@ def load_columns(ws) -> list[ColumnRect]:
     header_map = {normalize_header(v): idx for idx, v in enumerate(headers)}
     required = {
         "type": "Type",
-        "xminm": "Xmin (m)",
-        "xmaxm": "Xmax (m)",
-        "yminm": "Ymin (m)",
-        "ymaxm": "Ymax (m)",
         "location": "Location",
+        "nodecoordinatexm": "Node Coordinate X (m)",
+        "nodecoordinateym": "Node Coordinate Y (m)",
     }
     missing = [label for key, label in required.items() if key not in header_map]
     if missing:
         raise SystemExit(f"Columns sheet missing required headers: {', '.join(missing)}")
 
-    has_node_x = "nodecoordinatexm" in header_map
-    has_node_y = "nodecoordinateym" in header_map
-    # YD(elev)/ZD(elev) give actual structural column dimensions; use the first found.
     yd_key = next((k for k in header_map if k.startswith("yd") and k != "yd"), None)
     zd_key = next((k for k in header_map if k.startswith("zd") and k != "zd"), None)
 
@@ -185,25 +178,15 @@ def load_columns(ws) -> list[ColumnRect]:
         if "columnno" in header_map and row[header_map["columnno"]] not in (None, ""):
             raw_column_no = str(row[header_map["columnno"]]).strip()
             column_no = raw_column_no if raw_column_no.upper().startswith("C") else f"C{raw_column_no}"
-        xmin = float(row[header_map["xminm"]])
-        xmax = float(row[header_map["xmaxm"]])
-        ymin = float(row[header_map["yminm"]])
-        ymax = float(row[header_map["ymaxm"]])
-        node_x_raw = row[header_map["nodecoordinatexm"]] if has_node_x else None
-        node_y_raw = row[header_map["nodecoordinateym"]] if has_node_y else None
-        node_x = float(node_x_raw) if node_x_raw not in (None, "") else (xmin + xmax) / 2.0
-        node_y = float(node_y_raw) if node_y_raw not in (None, "") else (ymin + ymax) / 2.0
+        node_x = float(row[header_map["nodecoordinatexm"]])
+        node_y = float(row[header_map["nodecoordinateym"]])
         yd_raw = row[header_map[yd_key]] if yd_key is not None else None
         zd_raw = row[header_map[zd_key]] if zd_key is not None else None
-        draw_w = float(yd_raw) / 1000.0 if yd_raw not in (None, "") else (xmax - xmin)
-        draw_h = float(zd_raw) / 1000.0 if zd_raw not in (None, "") else (ymax - ymin)
+        draw_w = float(yd_raw) / 1000.0 if yd_raw not in (None, "") else 0.3
+        draw_h = float(zd_raw) / 1000.0 if zd_raw not in (None, "") else 0.3
         records.append(
             ColumnRect(
                 type_name=column_no or str(row[header_map["type"]]).strip(),
-                xmin=xmin,
-                xmax=xmax,
-                ymin=ymin,
-                ymax=ymax,
                 location=str(row[header_map["location"]] or "").strip(),
                 node_x=node_x,
                 node_y=node_y,
@@ -306,15 +289,10 @@ def load_secondary_beams(ws) -> list[BeamStrip]:
 def load_feature_rects(ws, floor: str, kind: str) -> list[FeatureRect]:
     headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
     header_map = {normalize_header(v): idx for idx, v in enumerate(headers)}
-    required = {
-        "coordinatex1m": "Coordinate X1 (m)",
-        "coordinatey1m": "Coordinate Y1 (m)",
-        "coordinatex2m": "Coordinate X2 (m)",
-        "coordinatey2m": "Coordinate Y2 (m)",
-    }
-    missing = [label for key, label in required.items() if key not in header_map]
-    if missing:
-        raise SystemExit(f"{ws.title} missing required headers: {', '.join(missing)}")
+    has_snapped = all(k in header_map for k in ("snappedx1m", "snappedy1m", "snappedx2m", "snappedy2m"))
+    has_raw = all(k in header_map for k in ("coordinatex1m", "coordinatey1m", "coordinatex2m", "coordinatey2m"))
+    if not has_snapped and not has_raw:
+        raise SystemExit(f"{ws.title} missing coordinate headers (need Snapped X1/Y1/X2/Y2 or Coordinate X1/Y1/X2/Y2)")
 
     label_key = None
     for candidate in ("location", "detailname", "type", "no"):
@@ -323,10 +301,10 @@ def load_feature_rects(ws, floor: str, kind: str) -> list[FeatureRect]:
             break
 
     records: list[FeatureRect] = []
-    x1_key = "snappedx1m" if "snappedx1m" in header_map else "coordinatex1m"
-    y1_key = "snappedy1m" if "snappedy1m" in header_map else "coordinatey1m"
-    x2_key = "snappedx2m" if "snappedx2m" in header_map else "coordinatex2m"
-    y2_key = "snappedy2m" if "snappedy2m" in header_map else "coordinatey2m"
+    x1_key = "snappedx1m" if has_snapped else "coordinatex1m"
+    y1_key = "snappedy1m" if has_snapped else "coordinatey1m"
+    x2_key = "snappedx2m" if has_snapped else "coordinatex2m"
+    y2_key = "snappedy2m" if has_snapped else "coordinatey2m"
     for row in ws.iter_rows(min_row=2, values_only=True):
         if all(value in (None, "") for value in row):
             continue

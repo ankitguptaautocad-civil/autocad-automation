@@ -136,10 +136,10 @@ DEFAULT_BOUNDARY_WALL_THICKNESS_MM = {
 _BOUNDARY_WALL_THICKNESS_CACHE = None
 
 # Rectangle workflow
-RECT_LOCATION_KEYWORDS = ["Lift", "STaircase", "Entry", "SHaft", "Mumty", "Toilet"]
+RECT_LOCATION_KEYWORDS = ["Lift", "STaircase", "Entry", "SHaft", "Mumty", "SUnken"]
 RECT_LOCATION_MAP = {
     "Lift": "Lift", "STaircase": "Staircase", "Entry": "Entry",
-    "SHaft": "Shaft", "Mumty": "Mumty", "Toilet": "Toilet",
+    "SHaft": "Shaft", "Mumty": "Mumty", "SUnken": "Sunken",
 }
 
 # Secondary beam workflow
