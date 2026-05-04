@@ -9,13 +9,14 @@ from openpyxl import load_workbook
 
 DEFAULT_INPUT_PATH = None
 DEFAULT_OUTPUT_PATH = None
-PAGE_WIDTH_PT = 1190.0
-PAGE_HEIGHT_PT = 842.0
-PAGE_MARGIN_PT = 42.0
-DRAWING_LEFT_OFFSET_PT = 148.0
-DRAWING_RIGHT_RESERVED_PT = 275.0
+PAGE_WIDTH_PT = 842.0
+PAGE_HEIGHT_PT = 1190.0
+PAGE_MARGIN_PT = 36.0
+DRAWING_LEFT_OFFSET_PT = 82.0
+DRAWING_RIGHT_RESERVED_PT = 148.0
 FLOOR_PAGES = (
     ("Plinth", "Plinth"),
+    ("Stilt roof", "Stilt Roof"),
     ("Typical floor roof", "Typical Floor"),
     ("Terrace", "Terrace"),
 )
@@ -32,6 +33,10 @@ class ColumnRect:
     ymin: float
     ymax: float
     location: str
+    node_x: float = 0.0
+    node_y: float = 0.0
+    draw_w: float = 0.0
+    draw_h: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,7 @@ class BeamStrip:
     direction: str
     beam_class: str
     beam_width_m: float
+    beam_depth_m: float
     wall_thickness_m: float
     start_x: float
     start_y: float
@@ -165,6 +171,12 @@ def load_columns(ws) -> list[ColumnRect]:
     if missing:
         raise SystemExit(f"Columns sheet missing required headers: {', '.join(missing)}")
 
+    has_node_x = "nodecoordinatexm" in header_map
+    has_node_y = "nodecoordinateym" in header_map
+    # YD(elev)/ZD(elev) give actual structural column dimensions; use the first found.
+    yd_key = next((k for k in header_map if k.startswith("yd") and k != "yd"), None)
+    zd_key = next((k for k in header_map if k.startswith("zd") and k != "zd"), None)
+
     records: list[ColumnRect] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
         if all(value in (None, "") for value in row):
@@ -173,14 +185,30 @@ def load_columns(ws) -> list[ColumnRect]:
         if "columnno" in header_map and row[header_map["columnno"]] not in (None, ""):
             raw_column_no = str(row[header_map["columnno"]]).strip()
             column_no = raw_column_no if raw_column_no.upper().startswith("C") else f"C{raw_column_no}"
+        xmin = float(row[header_map["xminm"]])
+        xmax = float(row[header_map["xmaxm"]])
+        ymin = float(row[header_map["yminm"]])
+        ymax = float(row[header_map["ymaxm"]])
+        node_x_raw = row[header_map["nodecoordinatexm"]] if has_node_x else None
+        node_y_raw = row[header_map["nodecoordinateym"]] if has_node_y else None
+        node_x = float(node_x_raw) if node_x_raw not in (None, "") else (xmin + xmax) / 2.0
+        node_y = float(node_y_raw) if node_y_raw not in (None, "") else (ymin + ymax) / 2.0
+        yd_raw = row[header_map[yd_key]] if yd_key is not None else None
+        zd_raw = row[header_map[zd_key]] if zd_key is not None else None
+        draw_w = float(yd_raw) / 1000.0 if yd_raw not in (None, "") else (xmax - xmin)
+        draw_h = float(zd_raw) / 1000.0 if zd_raw not in (None, "") else (ymax - ymin)
         records.append(
             ColumnRect(
                 type_name=column_no or str(row[header_map["type"]]).strip(),
-                xmin=float(row[header_map["xminm"]]),
-                xmax=float(row[header_map["xmaxm"]]),
-                ymin=float(row[header_map["yminm"]]),
-                ymax=float(row[header_map["ymaxm"]]),
+                xmin=xmin,
+                xmax=xmax,
+                ymin=ymin,
+                ymax=ymax,
                 location=str(row[header_map["location"]] or "").strip(),
+                node_x=node_x,
+                node_y=node_y,
+                draw_w=draw_w,
+                draw_h=draw_h,
             )
         )
     return records
@@ -195,6 +223,7 @@ def load_beams(ws) -> list[BeamStrip]:
         "direction": "Direction",
         "beamclass": "Beam class",
         "beamwidthmm": "Beam width (mm)",
+        "beamdepthmm": "Beam depth (mm)",
         "wallthicknessmm": "Wall thickness (mm)",
         "beamstartxm": "Beam Start X (m)",
         "beamstartym": "Beam Start Y (m)",
@@ -216,6 +245,7 @@ def load_beams(ws) -> list[BeamStrip]:
                 direction=str(row[header_map["direction"]]).strip().upper(),
                 beam_class=str(row[header_map["beamclass"]]).strip(),
                 beam_width_m=float(row[header_map["beamwidthmm"]]) / 1000.0,
+                beam_depth_m=float(row[header_map["beamdepthmm"]]) / 1000.0,
                 wall_thickness_m=float(row[header_map["wallthicknessmm"]]) / 1000.0,
                 start_x=float(row[header_map["beamstartxm"]]),
                 start_y=float(row[header_map["beamstartym"]]),
@@ -234,6 +264,7 @@ def load_secondary_beams(ws) -> list[BeamStrip]:
         "type": "Type",
         "floor": "Floor",
         "beamwidthmm": "Beam width (mm)",
+        "beamdepthmm": "Beam depth (mm)",
         "wallthicknessmm": "Wall thickness (mm)",
         "snappedx1m": "Snapped X1 (m)",
         "snappedy1m": "Snapped Y1 (m)",
@@ -260,6 +291,7 @@ def load_secondary_beams(ws) -> list[BeamStrip]:
                 direction=direction,
                 beam_class="Secondary",
                 beam_width_m=float(row[header_map["beamwidthmm"]]) / 1000.0,
+                beam_depth_m=float(row[header_map["beamdepthmm"]]) / 1000.0,
                 wall_thickness_m=float(row[header_map["wallthicknessmm"]]) / 1000.0,
                 start_x=start_x,
                 start_y=start_y,
@@ -574,10 +606,10 @@ def compute_bounds(
     shear_walls: list[SignedShearWall] | None = None,
     features: list[FeatureRect] | None = None,
 ) -> tuple[float, float, float, float]:
-    min_x = min(column.xmin for column in columns)
-    max_x = max(column.xmax for column in columns)
-    min_y = min(column.ymin for column in columns)
-    max_y = max(column.ymax for column in columns)
+    min_x = min(column.node_x - column.draw_w * 0.5 for column in columns)
+    max_x = max(column.node_x + column.draw_w * 0.5 for column in columns)
+    min_y = min(column.node_y - column.draw_h * 0.5 for column in columns)
+    max_y = max(column.node_y + column.draw_h * 0.5 for column in columns)
     for beam in beams:
         bx, by, bw, bh = beam_rect(beam, beam.beam_width_m)
         min_x = min(min_x, bx)
@@ -728,6 +760,44 @@ class SimplePdfWriter:
         path.write_bytes(pdf)
 
 
+def boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def _try_place_label(
+    placed_boxes: list[tuple[float, float, float, float]],
+    px: float,
+    py: float,
+    pw: float,
+    ph: float,
+    lbl: str,
+    font_size: float,
+) -> tuple[float, float, tuple[float, float, float, float]]:
+    text_w = len(lbl) * font_size * 0.58
+    text_h = font_size
+    fracs = (0.50, 0.25, 0.75, 0.15, 0.85)
+    if pw >= ph:
+        for frac in fracs:
+            cx = px + pw * frac
+            text_x = cx - text_w * 0.5
+            text_y = py + (ph * 0.5) - (font_size * 0.30)
+            box = (text_x, text_y, text_x + text_w, text_y + text_h)
+            if not any(boxes_overlap(box, placed) for placed in placed_boxes):
+                return text_x, text_y, box
+    else:
+        for frac in fracs:
+            cy = py + ph * frac
+            text_x = px + (pw * 0.5) - text_w * 0.5
+            text_y = cy - font_size * 0.30
+            box = (text_x, text_y, text_x + text_w, text_y + text_h)
+            if not any(boxes_overlap(box, placed) for placed in placed_boxes):
+                return text_x, text_y, box
+    text_x = px + (pw * 0.5) - (len(lbl) * font_size * 0.29)
+    text_y = py + (ph * 0.5) - (font_size * 0.30)
+    box = (text_x, text_y, text_x + text_w, text_y + text_h)
+    return text_x, text_y, box
+
+
 def draw_page(
     page_title: str,
     columns: list[ColumnRect],
@@ -745,92 +815,69 @@ def draw_page(
     x_grid_items = [(vertical_grid_label(i), value) for i, value in enumerate(grid_x)]
     y_grid_items = [(horizontal_grid_label(i), value) for i, value in enumerate(grid_y)]
 
-    # Title and legend.
+    # Title.
     c.fill_color(0, 0, 0)
-    c.text(42, PAGE_HEIGHT_PT - 30, f"Initial Structural Plan - {page_title}", size=16, font="F2")
+    c.text(42, PAGE_HEIGHT_PT - 20, f"Initial Structural Plan - {page_title}", size=14, font="F2")
 
-    # Legend block at bottom-right.
-    legend_right_x = PAGE_WIDTH_PT - 320
-    legend_y = 48
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x, legend_y + 42, "Legend", size=10, font="F2")
-    c.text(legend_right_x, legend_y + 28, "Special marks inside columns: C = corner, L = lift", size=8)
-
-    c.fill_color(0.85, 0.85, 0.85)
-    c.stroke_color(0, 0, 0)
-    c.line_width(0.8)
-    c.rect(legend_right_x, legend_y + 8, 14, 14, "B")
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x + 20, legend_y + 11, "Column", size=9)
-
-    c.stroke_color(0, 0, 0)
-    c.line_width(1.0)
-    c.rect(legend_right_x + 88, legend_y + 10, 20, 10, "S")
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x + 114, legend_y + 11, "Primary beam", size=9)
-
-    c.stroke_color(0.10, 0.32, 0.82)
-    c.line_width(1.0)
-    c.rect(legend_right_x + 194, legend_y + 10, 20, 10, "S")
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x + 220, legend_y + 11, "Secondary beam", size=9)
-
-    c.fill_color(0.88, 0.15, 0.15)
-    c.stroke_color(0.88, 0.15, 0.15)
-    c.rect(legend_right_x + 324, legend_y + 10, 20, 10, "B")
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x + 350, legend_y + 11, "Primary wall", size=9)
-
-    c.fill_color(0.55, 0.33, 0.16)
-    c.stroke_color(0.55, 0.33, 0.16)
-    c.rect(legend_right_x + 324, legend_y - 8, 20, 10, "B")
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x + 350, legend_y - 7, "Secondary wall", size=9)
-
-    c.fill_color(0.35, 0.10, 0.10)
-    c.stroke_color(0.35, 0.10, 0.10)
-    c.rect(legend_right_x + 324, legend_y - 26, 20, 10, "B")
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x + 350, legend_y - 25, "Shear wall", size=9)
-
-    c.stroke_color(0.16, 0.50, 0.20)
-    c.line_width(0.9)
-    c.dash(4.0, 3.0)
-    c.rect(legend_right_x + 88, legend_y - 8, 20, 10, "S")
-    c.dash()
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x + 114, legend_y - 7, "Balcony", size=9)
-
-    c.stroke_color(0.82, 0.46, 0.10)
-    c.line_width(0.9)
-    c.dash(4.0, 3.0)
-    c.rect(legend_right_x + 194, legend_y - 8, 20, 10, "S")
-    c.dash()
-    c.fill_color(0, 0, 0)
-    c.text(legend_right_x + 220, legend_y - 7, "Staircase", size=9)
-
-    # Grid reference tables on the right side.
-    table_x = PAGE_WIDTH_PT - 215
-    x_table_top = PAGE_HEIGHT_PT - 90
-    y_table_top = PAGE_HEIGHT_PT - 360
-    row_h = 22
+    # Compact right panel: grid tables then vertical legend.
+    panel_x = PAGE_WIDTH_PT - 140
+    _panel_y = PAGE_HEIGHT_PT - 36
+    _row_h = 13
 
     c.fill_color(0, 0, 0)
-    c.text(table_x, x_table_top + 18, "Vertical Grids", size=20, font="F2")
-    c.text(table_x, x_table_top + 6, "No.", size=16, font="F2")
-    c.text(table_x + 34, x_table_top + 6, "X (m)", size=16, font="F2")
-    for idx, (label, value) in enumerate(x_grid_items):
-        y = x_table_top - (idx + 1) * row_h
-        c.text(table_x, y, label, size=16)
-        c.text(table_x + 34, y, f"{value:.3f}", size=16)
+    c.text(panel_x, _panel_y, "Vertical Grids", size=8, font="F2")
+    _panel_y -= 11
+    c.text(panel_x, _panel_y, "No.", size=7, font="F2")
+    c.text(panel_x + 22, _panel_y, "X (m)", size=7, font="F2")
+    for label, value in x_grid_items:
+        _panel_y -= _row_h
+        c.text(panel_x, _panel_y, label, size=7)
+        c.text(panel_x + 22, _panel_y, f"{value:.3f}", size=7)
 
-    c.text(table_x, y_table_top + 18, "Horizontal Grids", size=20, font="F2")
-    c.text(table_x, y_table_top + 6, "No.", size=16, font="F2")
-    c.text(table_x + 34, y_table_top + 6, "Y (m)", size=16, font="F2")
-    for idx, (label, value) in enumerate(y_grid_items):
-        y = y_table_top - (idx + 1) * row_h
-        c.text(table_x, y, label, size=16)
-        c.text(table_x + 34, y, f"{value:.3f}", size=16)
+    _panel_y -= 16
+    c.text(panel_x, _panel_y, "Horizontal Grids", size=8, font="F2")
+    _panel_y -= 11
+    c.text(panel_x, _panel_y, "No.", size=7, font="F2")
+    c.text(panel_x + 22, _panel_y, "Y (m)", size=7, font="F2")
+    for label, value in y_grid_items:
+        _panel_y -= _row_h
+        c.text(panel_x, _panel_y, label, size=7)
+        c.text(panel_x + 22, _panel_y, f"{value:.3f}", size=7)
+
+    _panel_y -= 18
+    c.fill_color(0, 0, 0)
+    c.text(panel_x, _panel_y, "Legend", size=8, font="F2")
+    _panel_y -= 8
+    c.text(panel_x, _panel_y, "C=corner  L=lift", size=6)
+    _panel_y -= 13
+
+    def _leg(lbl, r, g, b, filled, dashed=False):
+        nonlocal _panel_y
+        c.line_width(0.7)
+        if dashed:
+            c.stroke_color(r, g, b)
+            c.dash(3.0, 2.0)
+            c.rect(panel_x, _panel_y, 10, 6, "S")
+            c.dash()
+        elif filled:
+            c.fill_color(r, g, b)
+            c.stroke_color(r, g, b)
+            c.rect(panel_x, _panel_y, 10, 6, "B")
+        else:
+            c.stroke_color(r, g, b)
+            c.rect(panel_x, _panel_y, 10, 6, "S")
+        c.fill_color(0, 0, 0)
+        c.text(panel_x + 14, _panel_y, lbl, size=6.5)
+        _panel_y -= 11
+
+    _leg("Column", 0.78, 0.78, 0.78, True)
+    _leg("Primary beam", 0, 0, 0, False)
+    _leg("Secondary beam", 0.10, 0.32, 0.82, False)
+    _leg("Primary wall", 0.88, 0.15, 0.15, True)
+    _leg("Secondary wall", 0.55, 0.33, 0.16, True)
+    _leg("Shear wall", 0.35, 0.10, 0.10, True)
+    _leg("Balcony", 0.16, 0.50, 0.20, False, dashed=True)
+    _leg("Staircase", 0.82, 0.46, 0.10, False, dashed=True)
 
     # Origin marker.
     ox, oy = transform.point(0.0, 0.0)
@@ -859,10 +906,10 @@ def draw_page(
     c.fill_color(0.35, 0.35, 0.35)
     for label, x in x_grid_items:
         px, py = transform.point(x, transform.min_y)
-        c.text(px - 7, max(18, py - 24), label, size=16, font="F2")
+        c.text(px - 6, max(14, py - 18), label, size=12, font="F2")
     for label, y in y_grid_items:
         px, py = transform.point(transform.min_x, y)
-        c.text(max(8, px - 30), py - 5, label, size=16, font="F2")
+        c.text(max(4, px - 26), py - 5, label, size=12, font="F2")
 
     # Primary beams first.
     c.stroke_color(0, 0, 0)
@@ -914,25 +961,28 @@ def draw_page(
         c.fill_color(1.0, 1.0, 1.0)
         c.text(text_x, text_y, wall.wall_id, size=font_size, font="F2")
 
-    # Primary beam IDs after wall fills so they remain visible on typical/terrace.
+    # Primary and secondary beam labels with anti-overlap placement.
+    placed_label_boxes: list[tuple[float, float, float, float]] = []
+
     for beam in primary_beams:
         bx, by, bw, bh = beam_rect(beam, beam.beam_width_m)
         px, py, pw, ph = transform.rect(bx, by, bw, bh)
-        font_size = max(7.0, min(10.0, min(pw, ph) * 0.55))
-        text_x = px + max(2.0, (pw * 0.5) - (len(beam.beam_no) * font_size * 0.15))
-        text_y = py + max(1.5, (ph * 0.5) - (font_size * 0.25))
+        lbl = f"{beam.beam_no} ({int(round(beam.beam_width_m * 1000))}; {int(round(beam.beam_depth_m * 1000))}; {int(round(beam.wall_thickness_m * 1000))})"
+        font_size = 13.0
+        text_x, text_y, box = _try_place_label(placed_label_boxes, px, py, pw, ph, lbl, font_size)
+        placed_label_boxes.append(box)
         c.fill_color(0, 0, 0)
-        c.text(text_x, text_y, beam.beam_no, size=font_size, font="F2")
+        c.text(text_x, text_y, lbl, size=font_size, font="F2")
 
-    # Secondary beam IDs inside the beam strip.
     for beam in secondary_beams:
         bx, by, bw, bh = beam_rect(beam, beam.beam_width_m)
         px, py, pw, ph = transform.rect(bx, by, bw, bh)
-        font_size = max(7.0, min(10.0, min(pw, ph) * 0.55))
-        text_x = px + max(2.0, (pw * 0.5) - (len(beam.beam_no) * font_size * 0.15))
-        text_y = py + max(1.5, (ph * 0.5) - (font_size * 0.25))
+        lbl = f"{beam.beam_no} ({int(round(beam.beam_width_m * 1000))}; {int(round(beam.beam_depth_m * 1000))}; {int(round(beam.wall_thickness_m * 1000))})"
+        font_size = 13.0
+        text_x, text_y, box = _try_place_label(placed_label_boxes, px, py, pw, ph, lbl, font_size)
+        placed_label_boxes.append(box)
         c.fill_color(0.05, 0.18, 0.55)
-        c.text(text_x, text_y, beam.beam_no, size=font_size, font="F2")
+        c.text(text_x, text_y, lbl, size=font_size, font="F2")
 
     # Balcony outlines.
     c.stroke_color(0.16, 0.50, 0.20)
@@ -977,7 +1027,7 @@ def draw_page(
 
     # Columns on top.
     for column in columns:
-        px, py, pw, ph = transform.rect(column.xmin, column.ymin, column.xmax - column.xmin, column.ymax - column.ymin)
+        px, py, pw, ph = transform.rect(column.node_x - column.draw_w * 0.5, column.node_y - column.draw_h * 0.5, column.draw_w, column.draw_h)
         c.fill_color(0.78, 0.78, 0.78)
         c.stroke_color(0, 0, 0)
         c.line_width(0.8)
