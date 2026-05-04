@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Initial Plan PDF · StructAuto{% endblock %}
+{% block content %}
+<h1>Initial Structural Plan PDF</h1>
+<p class="muted">
+  Upload <code>node_coordinates_*.xlsx</code> (required) and
+  <code>other_coordinates_*.xlsx</code> (optional, adds balconies, lift /
+  staircase / shaft / mumty zones). Both files are outputs of the Node
+  Pipeline. Returns a 3-page PDF (Plinth, Typical Floor, Terrace) for review.
+</p>
+
+<div class="card">
+  <div class="row">
+    <button id="pick-folder" class="btn-primary">📁 Pick working folder (PDF saves here)</button>
+    <span id="folder-label" class="muted">No folder selected.</span>
+  </div>
+
+  <div class="stack" style="margin-top:1rem">
+    <label>
+      Select 1-2 Excel files (<code>node_coordinates_*.xlsx</code> + optional <code>other_coordinates_*.xlsx</code>)
+      <input id="dxf-input" type="file" accept=".xlsx" multiple />
+    </label>
+    <ul id="file-list" class="file-list"></ul>
+
+    <button id="run-btn" class="btn-primary" disabled>▶ Generate PDF</button>
+  </div>
+</div>
+
+<div id="output-card" class="card hidden" style="margin-top:1.5rem">
+  <h3>Result</h3>
+  <div id="status"></div>
+  <ul id="output-list" class="file-list"></ul>
+  <pre id="log" class="log hidden"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/filesystem.js') }}"></script>
+<script>
+  initPipelinePage({
+    kind: "initial-plan",
+    endpoint: "{{ url_for('api_run_initial_plan') }}",
+    downloadBase: "/api/download",
+    accept: [".xlsx"],
+  });
+</script>
+{% endblock %}

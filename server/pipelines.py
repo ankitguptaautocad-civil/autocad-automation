@@ -80,3 +80,31 @@ def run_node_pipeline(scripts_dir: Path, job_dir: Path) -> dict:
         "stderr": r1.stderr + "\n---\n" + r2.stderr,
         "outputs": outputs,
     }
+
+
+def run_initial_plan_pipeline(scripts_dir: Path, job_dir: Path) -> dict:
+    """Run "initial structural plan drawing for all 3 floors.py".
+
+    Input: node_coordinates_*.xlsx (required) + other_coordinates_*.xlsx (optional),
+    both already placed in job_dir.
+    Output: a 3-page PDF (Plinth, Typical Floor, Terrace).
+    """
+    script = scripts_dir / "initial structural plan drawing for all 3 floors.py"
+    if not script.exists():
+        raise PipelineError(f"Script not found: {script}")
+
+    node_xlsx = next(
+        (p for p in job_dir.glob("node_coordinates_*.xlsx")),
+        None,
+    )
+    if node_xlsx is None:
+        raise PipelineError(
+            "No node_coordinates_*.xlsx found in upload. "
+            "Run the Node Pipeline first and upload its output here."
+        )
+
+    cmd = [sys.executable, str(script), "--input", str(node_xlsx)]
+    result = _run(cmd, cwd=job_dir)
+
+    outputs = sorted(p for p in job_dir.glob("*.pdf"))
+    return {"stdout": result.stdout, "stderr": result.stderr, "outputs": outputs}

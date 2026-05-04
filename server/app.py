@@ -36,7 +36,12 @@ from sqlalchemy import desc
 
 from config import Config, DEFAULT_ADMIN_PASSWORD, DEFAULT_SECRET
 from models import AuditLog, User, db
-from pipelines import PipelineError, run_dxf_pipeline, run_node_pipeline
+from pipelines import (
+    PipelineError,
+    run_dxf_pipeline,
+    run_initial_plan_pipeline,
+    run_node_pipeline,
+)
 
 
 csrf = CSRFProtect()
@@ -223,6 +228,11 @@ def _register_routes(app: Flask) -> None:
     def node_page():
         return render_template("node.html")
 
+    @app.route("/initial-plan", methods=["GET"])
+    @login_required
+    def initial_plan_page():
+        return render_template("initial_plan.html")
+
     @app.route("/api/run/dxf", methods=["POST"])
     @login_required
     @csrf.exempt
@@ -299,6 +309,49 @@ def _register_routes(app: Flask) -> None:
         output_names = [p.name for p in result["outputs"]]
         _log(
             "node_run", success=True, files=saved,
+            duration=time.time() - started,
+            details=f"outputs={output_names}",
+        )
+        return jsonify(
+            ok=True,
+            job_id=job_dir.name,
+            outputs=output_names,
+            stdout=result["stdout"][-4000:],
+        )
+
+    @app.route("/api/run/initial-plan", methods=["POST"])
+    @login_required
+    @csrf.exempt
+    def api_run_initial_plan():
+        _cleanup_old_jobs()
+        files = request.files.getlist("files")
+        xlsxs = [f for f in files if f.filename.lower().endswith(".xlsx")]
+        if not xlsxs:
+            return jsonify(ok=False, error="No Excel files uploaded."), 400
+
+        job_dir = _new_job_dir()
+        saved = []
+        for f in xlsxs:
+            dest = job_dir / Path(f.filename).name
+            f.save(dest)
+            saved.append(dest.name)
+
+        started = time.time()
+        try:
+            result = run_initial_plan_pipeline(Config.SCRIPTS_DIR, job_dir)
+        except PipelineError as e:
+            _log(
+                "initial_plan_run", success=False, files=saved,
+                duration=time.time() - started,
+                details=f"{e}\nSTDERR:\n{e.stderr[-2000:]}",
+            )
+            return jsonify(
+                ok=False, error=str(e), stdout=e.stdout[-4000:], stderr=e.stderr[-4000:]
+            ), 500
+
+        output_names = [p.name for p in result["outputs"]]
+        _log(
+            "initial_plan_run", success=True, files=saved,
             duration=time.time() - started,
             details=f"outputs={output_names}",
         )
@@ -431,7 +484,8 @@ def _register_routes(app: Flask) -> None:
         logs = q.order_by(desc(AuditLog.timestamp)).limit(500).all()
         users = [u.username for u in User.query.order_by(User.username).all()]
         actions = [
-            "login", "logout", "dxf_run", "node_run", "download", "download_zip",
+            "login", "logout", "dxf_run", "node_run", "initial_plan_run",
+            "download", "download_zip",
             "admin_create_user", "admin_reset_password", "admin_rename_user",
             "admin_toggle_disabled", "admin_delete_user",
         ]

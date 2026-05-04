@@ -13,6 +13,10 @@
     <h2>Node Pipeline</h2>
     <p>Upload 4 Excels (DXF outputs + nonplinth secondary + <code>building info.xlsx</code>) → get node_coordinates + other_coordinates + column_beam_pairs.</p>
   </a>
+  <a class="tile tile-initial-plan" href="{{ url_for('initial_plan_page') }}">
+    <h2>Initial Plan PDF</h2>
+    <p>Upload <code>node_coordinates</code> (+ optional <code>other_coordinates</code>) → get a 3-page review PDF (Plinth / Typical Floor / Terrace).</p>
+  </a>
 </div>
 
 <div class="card" style="margin-top:2rem">
@@ -21,6 +25,7 @@
     <li>Run <code>Run Anchor Workflow.bat</code> on the AutoCAD operator's laptop → produces <code>floor_coordinates_*.xlsx</code> files.</li>
     <li>Open <strong>DXF Pipeline</strong> here → upload 3 DXFs → save outputs to your project folder.</li>
     <li>Open <strong>Node Pipeline</strong> here → upload the 2 DXF outputs + the nonplinth secondary file + <code>building info.xlsx</code> → save final results.</li>
+    <li>Open <strong>Initial Plan PDF</strong> here → upload the <code>node_coordinates</code> Excel (and optionally <code>other_coordinates</code>) → download the 3-page review PDF.</li>
   </ol>
 </div>
 {% endblock %}
