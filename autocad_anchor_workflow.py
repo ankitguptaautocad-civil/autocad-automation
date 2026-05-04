@@ -26,7 +26,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
 try:
@@ -77,12 +77,13 @@ INSUNITS_NAMES = {
 
 # Column workflow
 LOCATION_KEYWORDS = [
-    "Corner", "Lift", "Staircase", "Entry",
+    "Corner", "Lift", "Staircase", "StaircaseEdge", "Entry",
     "BackEdge", "FrontEdge", "LeftEdge", "RightEdge",
     "Interior", "Shaft", "Mumty", "LiftStaircase",
 ]
 LOCATION_MAP = {
     "Corner": "Corner", "Lift": "Lift", "Staircase": "Staircase",
+    "StaircaseEdge": "Staircase on edge",
     "Entry": "Entry", "BackEdge": "Back edge", "FrontEdge": "Front edge",
     "LeftEdge": "Left edge", "RightEdge": "Right edge",
     "Interior": "Interior", "Shaft": "Shaft", "Mumty": "Mumty",
@@ -96,15 +97,49 @@ ANCHOR_MAP = {
 BEAM_X_KEYWORDS = ["Left", "Right", "Centre"]
 BEAM_Y_KEYWORDS = ["Back", "Front", "Centre"]
 ORIENTATION_KEYWORDS = ["Horizontal", "Vertical"]
+STAIRCASE_EDGE_KEYWORDS = ["LeftRight", "FrontBack"]
+STAIRCASE_EDGE_MAP = {
+    "LeftRight": "Left/right edge",
+    "FrontBack": "Front/back edge",
+}
 # # ── Old floor names (kept for reference) ──
 # FLOOR_NAMES = ["Stilt floor", "Typical floor", "Terrace"]
 FLOOR_NAMES = ["Plinth", "Stilt roof", "Typical floor roof", "Terrace"]
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BUILDING_INFO_PATH = PROJECT_ROOT / "STD ANL model" / "building info.xlsx"
+
+BOUNDARY_WALL_THICKNESS_KEYS = {
+    "Plinth": {
+        "left_right": "Plinth left+right boundary wall thickness",
+        "front": "Plinth front boundary wall thickness",
+        "back": "Plinth back boundary wall thickness",
+    },
+    "Typical": {
+        "front": "Typical front boundary wall thickness",
+        "left_right": "Typical left+right boundary wall thickness",
+        "back": "Typical back boundary wall thickness",
+    },
+    "Terrace": {
+        "front": "Terrace front boundary wall thickness",
+        "back": "Terrace back boundary wall thickness",
+        "left_right": "Terrace left/right boundary wall thickness",
+    },
+}
+
+DEFAULT_BOUNDARY_WALL_THICKNESS_MM = {
+    "Plinth": {"left_right": 230, "front": 0, "back": 230},
+    "Typical": {"front": 115, "left_right": 115, "back": 115},
+    "Terrace": {"front": 40, "back": 40, "left_right": 40},
+}
+
+_BOUNDARY_WALL_THICKNESS_CACHE = None
+
 # Rectangle workflow
-RECT_LOCATION_KEYWORDS = ["Lift", "STaircase", "Entry", "SHaft", "Mumty"]
+RECT_LOCATION_KEYWORDS = ["Lift", "STaircase", "Entry", "SHaft", "Mumty", "Toilet"]
 RECT_LOCATION_MAP = {
     "Lift": "Lift", "STaircase": "Staircase", "Entry": "Entry",
-    "SHaft": "Shaft", "Mumty": "Mumty",
+    "SHaft": "Shaft", "Mumty": "Mumty", "Toilet": "Toilet",
 }
 
 # Secondary beam workflow
@@ -217,17 +252,15 @@ def _toggle_snap(doc, enable):
 
 
 def _ask_snap_and_set(doc):
-    """Ask user if they want snapping, toggle accordingly. Returns True if snap on."""
-    use_snap = prompt_keyword(doc, "Use snapping?", PRESENT_KEYWORDS)
-    snap_on = use_snap == "Yes"
-    _toggle_snap(doc, snap_on)
-    return snap_on
+    """Keep object snap enabled for interactive picks."""
+    _toggle_snap(doc, True)
+    return True
 
 
 def prompt_point(doc, prompt_text, base_point=None, max_retries=3, ask_snap=True):
     """Prompt for point with retry logic for COM errors."""
-    if ask_snap:
-        _ask_snap_and_set(doc)
+    # `ask_snap` is retained for compatibility; snap is now always forced on.
+    _toggle_snap(doc, True)
 
     bp = APoint(base_point[0], base_point[1], 0) if base_point else APoint(0, 0, 0)
     for attempt in range(max_retries):
@@ -426,6 +459,100 @@ def bfs_reorder(raw_coords, scale_m_per_unit, origin):
     return [(bfs_num + 1, orig_idx) for bfs_num, (orig_idx, *_) in enumerate(ordered)]
 
 
+def _clone_boundary_defaults():
+    return {
+        floor_group: dict(side_map)
+        for floor_group, side_map in DEFAULT_BOUNDARY_WALL_THICKNESS_MM.items()
+    }
+
+
+def _coerce_wall_thickness_mm(value, default_value):
+    try:
+        return int(round(float(value)))
+    except Exception:
+        return int(default_value)
+
+
+def _read_boundary_wall_thicknesses():
+    boundary_wts = _clone_boundary_defaults()
+    if not BUILDING_INFO_PATH.exists():
+        return boundary_wts
+
+    try:
+        wb = load_workbook(BUILDING_INFO_PATH, data_only=True)
+    except Exception:
+        return boundary_wts
+
+    try:
+        ws = wb["building info"]
+    except KeyError:
+        wb.close()
+        return boundary_wts
+
+    kv = {}
+    for row in ws.iter_rows(min_row=1, values_only=True):
+        if row and row[0] is not None:
+            kv[str(row[0]).strip()] = row[1]
+
+    wb.close()
+
+    for floor_group, side_keys in BOUNDARY_WALL_THICKNESS_KEYS.items():
+        for side, key in side_keys.items():
+            if key in kv and kv[key] not in (None, ""):
+                default_value = boundary_wts[floor_group][side]
+                boundary_wts[floor_group][side] = _coerce_wall_thickness_mm(
+                    kv[key], default_value
+                )
+
+    return boundary_wts
+
+
+def get_boundary_wall_thicknesses(force_reload=False):
+    global _BOUNDARY_WALL_THICKNESS_CACHE
+    if force_reload or _BOUNDARY_WALL_THICKNESS_CACHE is None:
+        _BOUNDARY_WALL_THICKNESS_CACHE = _read_boundary_wall_thicknesses()
+    return _BOUNDARY_WALL_THICKNESS_CACHE
+
+
+def _get_floor_boundary_group(floor_name):
+    if floor_name == "Plinth":
+        return "Plinth"
+    if floor_name in ("Stilt roof", "Typical floor roof"):
+        return "Typical"
+    if floor_name == "Terrace":
+        return "Terrace"
+    return None
+
+
+def _get_boundary_side(location, beam_loc, is_internal_dir):
+    if location in ("Lift", "Lift+staircase", "Staircase"):
+        return None
+    if location != "Corner" and is_internal_dir:
+        return None
+    if beam_loc in ("Left", "Right"):
+        return "left_right"
+    if beam_loc == "Front":
+        return "front"
+    if beam_loc == "Back":
+        return "back"
+    return None
+
+
+def _get_column_internal_flags(location, staircase_edge_line=None):
+    if location in ("Left edge", "Right edge"):
+        return False, True
+    if location in ("Front edge", "Back edge"):
+        return True, False
+    if location == "Staircase on edge":
+        if staircase_edge_line == "Left/right edge":
+            return False, True
+        if staircase_edge_line == "Front/back edge":
+            return True, False
+    if location in ("Corner", "Lift", "Lift+staircase"):
+        return False, False
+    return True, True
+
+
 # ─── Beam / Anchor verification ──────────────────────────────────────
 
 # Anchor "Front left" → expected beam_x="Left", beam_y="Front"
@@ -555,6 +682,49 @@ def collect_column_point(doc, model, pick_num, marker_size):
     # Custom beam dims for internal beam when wall_on_top=No
     bwx_custom, bdx_custom = None, None
     bwy_custom, bdy_custom = None, None
+    boundary_wall_wts = get_boundary_wall_thicknesses()
+    staircase_edge_line = None
+    beam_x_loc, beam_y_loc = _ANCHOR_TO_BEAM[anchor]
+
+    if location == "Staircase on edge":
+        staircase_edge_line = prompt_keyword(
+            doc, "Staircase edge line", STAIRCASE_EDGE_KEYWORDS, STAIRCASE_EDGE_MAP
+        )
+
+    actual_location = location
+    x_is_internal, y_is_internal = _get_column_internal_flags(
+        actual_location, staircase_edge_line
+    )
+
+    if actual_location in ("Left edge", "Right edge", "Front edge", "Back edge", "Edges",
+                           "Staircase on edge"):
+        internal_axis = "X" if x_is_internal else "Y"
+        wot = prompt_keyword(doc, f"Internal beam ({internal_axis}): wall on top?",
+                             ["Yes", "No"])
+        wall_on_top = (wot == "Yes")
+        if not wall_on_top:
+            if x_is_internal:
+                bwx_custom = int(prompt_real(doc, "Internal beam width X (mm)", 230))
+                bdx_custom = int(prompt_real(doc, "Internal beam depth X (mm)", 225))
+            else:
+                bwy_custom = int(prompt_real(doc, "Internal beam width Y (mm)", 230))
+                bdy_custom = int(prompt_real(doc, "Internal beam depth Y (mm)", 225))
+    elif actual_location not in ("Corner", "Lift", "Lift+staircase"):
+        wot_x = prompt_keyword(doc, "Beam X: wall on top?", ["Yes", "No"])
+        wall_on_top_x = (wot_x == "Yes")
+        if not wall_on_top_x:
+            bwx_custom = int(prompt_real(doc, "Beam width X (mm)", 230))
+            bdx_custom = int(prompt_real(doc, "Beam depth X (mm)", 225))
+
+        wot_y = prompt_keyword(doc, "Beam Y: wall on top?", ["Yes", "No"])
+        wall_on_top_y = (wot_y == "Yes")
+        if not wall_on_top_y:
+            bwy_custom = int(prompt_real(doc, "Beam width Y (mm)", 230))
+            bdy_custom = int(prompt_real(doc, "Beam depth Y (mm)", 225))
+
+    if actual_location not in ("Corner", "Lift", "Lift+staircase"):
+        # Legacy beam-location prompts are bypassed; locations now follow anchor direction.
+        location = "Corner"
 
     if location in ("Corner",):
         # ── Corner: auto-derive, no beam X/Y prompts, no wall question ──
@@ -639,54 +809,44 @@ def collect_column_point(doc, model, pick_num, marker_size):
             bwy_custom = int(prompt_real(doc, "Beam width Y (mm)", 230))
             bdy_custom = int(prompt_real(doc, "Beam depth Y (mm)", 225))
 
+    location = actual_location
+
     # Column orientation
     orientation = prompt_keyword(doc, "Column orientation", ORIENTATION_KEYWORDS)
 
     # ── Beam depth/width/wt defaults based on location + wall_on_top ──
 
-    def _get_column_wt(location, floor_name, wall_on_top, is_internal_dir):
-        """Get wall thickness for a column beam based on location, floor, and wall status.
-        is_internal_dir: True if this is the internal-pointing beam direction.
-        For edge columns: along-edge direction (is_internal=False) always gets boundary wt,
-        internal direction follows wall_on_top rules."""
+    def _get_column_wt(location, floor_name, wall_on_top, is_internal_dir, boundary_side):
+        """Get wall thickness for a column beam based on location, floor, and wall status."""
         is_lift = location in ("Lift", "Lift+staircase")
-        is_boundary_loc = location in ("Corner", "Left edge", "Right edge",
-                                       "Front edge", "Back edge", "Edges")
-        is_staircase = location in ("Staircase",)
+        is_staircase = location in ("Staircase", "Staircase on edge")
+        is_staircase_on_edge = location == "Staircase on edge"
 
-        # For boundary/edge columns: along-edge beam = boundary wt,
-        # internal beam = wall_on_top rules
-        is_boundary_beam = is_boundary_loc and not is_internal_dir
+        if is_lift:
+            return 230
+
+        if is_staircase_on_edge and boundary_side is not None:
+            return 230
+
+        if boundary_side is not None:
+            floor_group = _get_floor_boundary_group(floor_name)
+            return boundary_wall_wts[floor_group][boundary_side]
 
         if floor_name not in ("Plinth", "Terrace"):
-            # ── Stilt roof / Typical floor roof (same rules) ──
-            if is_lift:
-                return 230
             if is_internal_dir and wall_on_top is False:
                 return 0
             return 115
 
-        # ── Plinth / Terrace ──
-        if is_lift:
-            return 230
-        elif is_boundary_beam or is_staircase:
-            # Along-edge beam on boundary, or staircase → always 115
+        if is_staircase:
             return 115
-        elif is_internal_dir and wall_on_top is True:
+        if is_internal_dir and wall_on_top is True:
             return 0  # interior with wall on Plinth/Terrace = 0
-        else:
-            return 0
+        return 0
 
-    # Determine which direction is internal for edges
-    # Left/Right edge: edge runs vertically (Y along edge), X is NOT internal, Y IS internal
-    # Front/Back edge: edge runs horizontally (X along edge), Y is NOT internal, X IS internal
-    x_is_internal = location in ("Front edge", "Back edge")
-    y_is_internal = location in ("Left edge", "Right edge")
-    # For non-edge: both are internal
-    if location not in ("Corner", "Lift", "Lift+staircase",
-                        "Left edge", "Right edge", "Front edge", "Back edge", "Edges"):
-        x_is_internal = True
-        y_is_internal = True
+    # Determine which direction is internal for edges / staircase-on-edge
+    x_is_internal, y_is_internal = _get_column_internal_flags(
+        location, staircase_edge_line
+    )
 
     # Beam depth defaults
     if location in ("Corner", "Lift", "Lift+staircase"):
@@ -724,8 +884,14 @@ def collect_column_point(doc, model, pick_num, marker_size):
         bdx = int(def_bdx)
         bwy = def_bwy
         bdy = int(def_bdy)
-        wtx = _get_column_wt(location, floor_name, wall_on_top_x, x_is_internal)
-        wty = _get_column_wt(location, floor_name, wall_on_top_y, y_is_internal)
+        wtx = _get_column_wt(
+            location, floor_name, wall_on_top_x, x_is_internal,
+            _get_boundary_side(location, beam_x_loc, x_is_internal)
+        )
+        wty = _get_column_wt(
+            location, floor_name, wall_on_top_y, y_is_internal,
+            _get_boundary_side(location, beam_y_loc, y_is_internal)
+        )
         # # ── Original prompts (uncomment to restore interactive mode) ──
         # safe_prompt(doc, f"--- {floor_name} ---")
         # bwx = prompt_real(doc, f"[{floor_name}] Beam width X (mm)", 230)
@@ -1164,7 +1330,10 @@ def _workflow_secondary_beams_core(doc, model, origin, scale_m_per_unit, marker_
         # Per-floor: assign defaults based on wall_on_top
         floors = {}
         for floor_name in floor_list:
-            if len(floor_list) == 1:
+            if beam_type == "SO":
+                # Non-plinth secondary beams are always present on all 3 floors.
+                present = "Yes"
+            elif len(floor_list) == 1:
                 # Single floor (e.g., Plinth) — always present, no need to ask
                 present = "Yes"
             else:
@@ -1271,11 +1440,14 @@ def workflow_secondary_beams_nonplinth(doc, model, origin, scale_m_per_unit, mar
 
 # ─── Workflow 4: Extra wall coordinates ──────────────────────────────
 
-EXTRAWALL_FLOOR_NAMES = ["Stilt roof", "Typical floor roof", "Terrace"]
+EXTRAWALL_FLOOR_DEFAULTS = {
+    "Stilt roof": {"present": "YES", "wall_thickness": 115},
+    "Typical floor roof": {"present": "YES", "wall_thickness": 115},
+}
 
 
 def workflow_extra_walls(doc, model, origin, scale_m_per_unit, marker_size):
-    """Collect extra wall data. Same logic as secondary beams (non-plinth only)."""
+    """Collect extra wall data with fixed floor defaults."""
     safe_prompt(doc, "=" * 50)
     safe_prompt(doc, "EXTRA WALL COORDINATES")
     safe_prompt(doc, "Pick 2 endpoints per wall. ENTER to finish.")
@@ -1312,31 +1484,11 @@ def workflow_extra_walls(doc, model, origin, scale_m_per_unit, marker_size):
         # Wall location
         wall_loc = prompt_keyword(doc, "Wall location", BEAM_LOC_KEYWORDS)
 
-        # Wall on top? — same logic as secondary beams
-        wot = prompt_keyword(doc, "Wall on top?", ["Yes", "No"])
-        ew_wall_on_top = (wot == "Yes")
-
-        # Per-floor: Present? wt based on wall_on_top, Terrace always 0
-        floors = {}
-        for floor_name in EXTRAWALL_FLOOR_NAMES:
-            safe_prompt(doc, f"--- {floor_name} ---")
-            present = prompt_keyword(doc, f"[{floor_name}] Present?", PRESENT_KEYWORDS)
-            if present == "Yes":
-                if floor_name == "Terrace":
-                    wt = 0  # Terrace always wt=0
-                elif ew_wall_on_top:
-                    wt = 115
-                else:
-                    wt = 0
-                floors[floor_name] = {
-                    "present": "YES",
-                    "wall_thickness": int(wt),
-                }
-            else:
-                floors[floor_name] = {
-                    "present": "NO",
-                    "wall_thickness": "",
-                }
+        # Fixed defaults: Yes for Stilt/Typical, Terrace omitted entirely.
+        floors = {
+            floor_name: values.copy()
+            for floor_name, values in EXTRAWALL_FLOOR_DEFAULTS.items()
+        }
 
         # Midpoint for marker
         mx = (ep1[0] + ep2[0]) / 2
@@ -1390,21 +1542,44 @@ def workflow_extra_walls(doc, model, origin, scale_m_per_unit, marker_size):
 # ─── Workflow 5: Balcony coordinates ────────────────────────────────
 
 def workflow_balconies(doc, model, origin, scale_m_per_unit, marker_size):
-    """Collect balcony data (front + back). Returns data for Excel."""
+    """Collect balcony data. Operator picks any number of Front and/or Back
+    balconies (no fixed count). Each balcony is tagged Front balcony or
+    Back balcony at the end of its prompt sequence. Labels are NOT numbered
+    — every Front balcony is saved as "Front balcony", every Back balcony
+    as "Back balcony"."""
     safe_prompt(doc, "=" * 50)
     safe_prompt(doc, "BALCONY COORDINATES")
-    safe_prompt(doc, "Pick 2 corners each for Front and Back balcony.")
+    safe_prompt(doc, "Pick 2 corners per balcony, then choose Front or Back. ENTER to finish.")
     safe_prompt(doc, "=" * 50)
 
     balconies = []
     temp_entities = []
+    pick_num = 1
 
-    for label in ["Front balcony", "Back balcony"]:
-        safe_prompt(doc, f"--- {label} ---")
-        corner1 = prompt_point(doc, f"{label} -- Pick corner 1")
+    BALCONY_TYPE_KEYWORDS = ["Front", "Back"]
+    BALCONY_TYPE_MAP = {"Front": "Front balcony", "Back": "Back balcony"}
+
+    while True:
+        # Pick corner 1 (or ENTER to finish)
+        _ask_snap_and_set(doc)
+        try:
+            time.sleep(0.1)
+            p1 = doc.Utility.GetPoint(
+                APoint(0, 0, 0),
+                f"\nBalcony #{pick_num} -- Pick corner 1 (or ENTER to finish): ",
+            )
+            corner1 = to_xy(p1)
+        except Exception as e:
+            _toggle_snap(doc, True)
+            error_msg = str(e).lower()
+            if "keyword" in error_msg or "cancel" in error_msg or "escape" in error_msg:
+                safe_prompt(doc, f"Finished picking. Total balconies: {len(balconies)}")
+                break
+            raise
+        _toggle_snap(doc, True)
 
         # Corner 1 properties
-        safe_prompt(doc, f"--- {label} Corner 1 properties ---")
+        safe_prompt(doc, f"--- Balcony #{pick_num} Corner 1 properties ---")
         anchor1 = prompt_keyword(doc, "Corner 1 -- Anchor location", ANCHOR_KEYWORDS, ANCHOR_MAP)
         # ── Phase 1: Use default (prompt commented out) ──
         wt1 = 115
@@ -1413,10 +1588,11 @@ def workflow_balconies(doc, model, origin, scale_m_per_unit, marker_size):
         beam_x1 = prompt_keyword(doc, "Corner 1 -- Beam X width location", BEAM_X_KEYWORDS)
         beam_y1 = prompt_keyword(doc, "Corner 1 -- Beam Y width location", BEAM_Y_KEYWORDS)
 
-        corner2 = prompt_point(doc, f"{label} -- Pick corner 2", base_point=corner1)
+        # Pick corner 2 (rubber-band from corner 1)
+        corner2 = prompt_point(doc, f"Balcony #{pick_num} -- Pick corner 2", base_point=corner1)
 
         # Corner 2 properties
-        safe_prompt(doc, f"--- {label} Corner 2 properties ---")
+        safe_prompt(doc, f"--- Balcony #{pick_num} Corner 2 properties ---")
         anchor2 = prompt_keyword(doc, "Corner 2 -- Anchor location", ANCHOR_KEYWORDS, ANCHOR_MAP)
         # ── Phase 1: Use default (prompt commented out) ──
         wt2 = 115
@@ -1424,6 +1600,10 @@ def workflow_balconies(doc, model, origin, scale_m_per_unit, marker_size):
         # wt2 = prompt_real(doc, "Corner 2 -- Wall thickness (mm)", 115)
         beam_x2 = prompt_keyword(doc, "Corner 2 -- Beam X width location", BEAM_X_KEYWORDS)
         beam_y2 = prompt_keyword(doc, "Corner 2 -- Beam Y width location", BEAM_Y_KEYWORDS)
+
+        # Balcony type — Front or Back. Same label reused for every balcony
+        # of that type, no numbering suffix.
+        label = prompt_keyword(doc, "Balcony type", BALCONY_TYPE_KEYWORDS, BALCONY_TYPE_MAP)
 
         mx = (corner1[0] + corner2[0]) / 2
         my = (corner1[1] + corner2[1]) / 2
@@ -1443,6 +1623,8 @@ def workflow_balconies(doc, model, origin, scale_m_per_unit, marker_size):
             "beam_x2": beam_x2,
             "beam_y2": beam_y2,
         })
+        safe_prompt(doc, f"Balcony #{pick_num} ({label}) saved. Pick next or ENTER to finish.")
+        pick_num += 1
 
     time.sleep(1)
     delete_markers(temp_entities)
@@ -1788,7 +1970,7 @@ def build_extra_wall_sheet(ws, data, scale_m_per_unit, origin):
 
         ew_colors = _EW_COLORS[(bfs_num - 1) % len(_EW_COLORS)]
 
-        for floor_idx, floor_name in enumerate(EXTRAWALL_FLOOR_NAMES):
+        for floor_idx, floor_name in enumerate(EXTRAWALL_FLOOR_DEFAULTS):
             fd = wall["floors"][floor_name]
             _write_row(ws, row, [
                 bfs_num,
@@ -1906,8 +2088,6 @@ SHEET_BUILDERS = {
     # "secondary_beams": ("Secondary beam coordinates", build_secondary_beam_sheet),
     "SP": ("Secondary beam coordinates_plinth", build_secondary_beam_plinth_sheet),
     "SO": ("Secondary beam coordinates_nonplinth", build_secondary_beam_nonplinth_sheet),
-    # Note: "SP"/"SO" are the type keys returned by the workflow functions,
-    # while "SecPlinth"/"SecOther" are the menu keys for user selection.
     "extra_walls": ("Extra wall coordinates", build_extra_wall_sheet),
     "balconies": ("Balcony coordinates", build_balcony_sheet),
     "plot_boundary": ("Plot boundary Y coordinates", build_plot_boundary_sheet),
@@ -1940,20 +2120,27 @@ SHEET_MENU = {
     "R": ("Rectangle coordinates", workflow_rectangles),
     # # ── Old single secondary beam menu (kept for reference) ──
     # "S": ("Secondary beam coordinates", workflow_secondary_beams),
-    "SecPlinth": ("Secondary beam coordinates (Plinth)", workflow_secondary_beams_plinth),
-    "SecOther": ("Secondary beam coordinates (Non-Plinth)", workflow_secondary_beams_nonplinth),
+    # IMPORTANT: keys with multiple capital letters keep AutoCAD's keyword
+    # abbreviation unique. Old keys "SecPlinth"/"SecOther"/"StaircaseDet"
+    # all abbreviated to "S" (everything before first lowercase letter), so
+    # AutoCAD picked the first S-keyword in alphabetical order regardless of
+    # what the operator typed.
+    "SP": ("Secondary beam coordinates (Plinth)", workflow_secondary_beams_plinth),
+    "SO": ("Secondary beam coordinates (Non-Plinth)", workflow_secondary_beams_nonplinth),
     "E": ("Extra wall coordinates", workflow_extra_walls),
     "B": ("Balcony coordinates", workflow_balconies),
     "P": ("Plot boundary Y coordinates", workflow_plot_boundary),
-    "StaircaseDet": ("Staircase details", workflow_staircase_details),
+    "SD": ("Staircase details", workflow_staircase_details),
 }
 
-# Display names for keys shown in the prompt
+# Display names for keys shown in the bracketed prompt. Operator still
+# types the short backend key (SP / SO / SD) — these strings are purely
+# for readability so the operator can tell what each option is.
 _MENU_DISPLAY = {
     "C": "Column", "R": "Rectangle",
-    "SecPlinth": "SecPlinth", "SecOther": "SecOther",
+    "SP": "SecPlinth", "SO": "SecOther",
     "E": "Extra", "B": "Balcony", "P": "Plot",
-    "StaircaseDet": "StaircaseDet",
+    "SD": "StaircaseDet",
 }
 
 
@@ -1972,8 +2159,9 @@ def show_menu(doc, remaining_keys):
     keywords = sorted(remaining_keys) + ["Done"]
     kw_string = " ".join(keywords)
 
-    # Display string uses full words
-    display_parts = [_MENU_DISPLAY[k] for k in sorted(remaining_keys)] + ["Done"]
+    # Display string shows full name + the typeable key in parens, so the
+    # operator knows what each option is AND what to type for it.
+    display_parts = [f"{_MENU_DISPLAY[k]}({k})" for k in sorted(remaining_keys)] + ["Done"]
     display_str = "/".join(display_parts)
 
     time.sleep(0.1)
@@ -2033,18 +2221,20 @@ def main():
     # Draw a small origin marker
     origin_markers = draw_marker(model, origin[0], origin[1], "O", marker_size)
 
-    # Menu loop
-    remaining = set(SHEET_MENU.keys())
+    # Menu loop. Sections stay in the menu after completion so the operator
+    # can re-pick any of them to fix mistakes — the latest run replaces the
+    # previous data for that section. Loop only ends on "Done".
+    menu_keys = set(SHEET_MENU.keys())
     all_results = []
 
     try:
-        while remaining:
-            choice = show_menu(doc, remaining)
+        while True:
+            choice = show_menu(doc, menu_keys)
 
             if choice == "Done":
                 break
 
-            if choice not in remaining:
+            if choice not in menu_keys:
                 safe_prompt(doc, f"Invalid choice: {choice}. Try again.")
                 continue
 
@@ -2053,12 +2243,18 @@ def main():
 
             result = workflow_fn(doc, model, origin, scale_m_per_unit, marker_size)
             if result is not None:
+                # If this section was already filled in an earlier round,
+                # discard the previous run entirely — only the latest data
+                # for this type goes into the Excel.
+                new_type = result["type"]
+                previous = next((r for r in all_results if r["type"] == new_type), None)
+                if previous is not None:
+                    all_results.remove(previous)
+                    safe_prompt(doc, f"  (Replaced previous {sheet_name} data)")
                 all_results.append(result)
-                remaining.discard(choice)
                 safe_prompt(doc, f"Completed: {sheet_name}")
             else:
                 safe_prompt(doc, f"Skipped: {sheet_name} (no data entered)")
-                # Keep in menu so user can retry
 
     except Exception as e:
         # Emergency cleanup: delete ALL marker entities left in drawing
