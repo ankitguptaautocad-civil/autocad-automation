@@ -17,10 +17,75 @@ Run node_coordinate_calculator.py first to create Filleddata_output.xlsx.
 import csv
 from pathlib import Path
 from openpyxl import load_workbook
+try:
+    import win32com.client as win32
+except ImportError:  # pragma: no cover - optional dependency on Windows
+    win32 = None
 
-BUILDING_INFO_PATH = Path(r"D:\JARVIS back up 16092025\JARVIS backup\Code - Full set\building info.xlsx")
-FILLED_PATH = Path(r"D:\JARVIS back up 16092025\JARVIS backup\STD ANL model\Filleddata.xlsx")
+BUILDING_INFO_PATH = Path(r"D:\JARVIS back up 16092025\JARVIS backup\STD ANL model\building info.xlsx")
+FILLED_PATH = Path(r"D:\JARVIS back up 16092025\JARVIS backup\STD ANL model\Datadata.xlsx")
 GLOBAL_CSV_PATH = Path(r"D:\JARVIS back up 16092025\JARVIS backup\Code - Full set\Global_assumptions.csv")
+_UNSET = object()
+
+
+class _ExcelCellAdapter:
+    def __init__(self, worksheet, row, column):
+        self._worksheet = worksheet
+        self._row = row
+        self._column = column
+
+    @property
+    def value(self):
+        return self._worksheet.Cells(self._row, self._column).Value
+
+    @value.setter
+    def value(self, new_value):
+        self._worksheet.Cells(self._row, self._column).Value = new_value
+
+
+class _ExcelSheetAdapter:
+    def __init__(self, worksheet):
+        self._worksheet = worksheet
+
+    @property
+    def max_row(self):
+        used = self._worksheet.UsedRange
+        return used.Row + used.Rows.Count - 1
+
+    @property
+    def max_column(self):
+        used = self._worksheet.UsedRange
+        return used.Column + used.Columns.Count - 1
+
+    def cell(self, row, column, value=_UNSET):
+        cell = _ExcelCellAdapter(self._worksheet, row, column)
+        if value is not _UNSET:
+            cell.value = value
+        return cell
+
+
+class _ExcelWorkbookAdapter:
+    def __init__(self, excel_app, workbook, opened_here, created_app):
+        self._excel_app = excel_app
+        self._workbook = workbook
+        self._opened_here = opened_here
+        self._created_app = created_app
+
+    def __getitem__(self, sheet_name):
+        return _ExcelSheetAdapter(self._workbook.Worksheets(sheet_name))
+
+    def save(self, _path=None):
+        self._workbook.Save()
+
+    def close(self):
+        if self._opened_here:
+            self._workbook.Close(SaveChanges=True)
+        if self._created_app and self._excel_app.Workbooks.Count == 0:
+            self._excel_app.Quit()
+
+
+def _open_filled_workbook():
+    return load_workbook(FILLED_PATH)
 
 
 def read_building_info():
@@ -55,6 +120,44 @@ def update_global_csv(ef_pairs):
         writer.writerows(rows)
 
 
+def _canonical_key(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text.casefold()
+
+
+def _find_param_col(ws, first_key):
+    """Locate the Datadata parameter key column from the first known key."""
+    first_key_norm = _canonical_key(first_key)
+    if first_key_norm:
+        for c in range(1, ws.max_column + 1):
+            cell_key = _canonical_key(ws.cell(2, c).value)
+            if cell_key == first_key_norm:
+                return c
+    return 31
+
+
+def _index_existing_params(ws, param_col):
+    """Map existing parameter keys to their row and track the last used row."""
+    existing_rows = {}
+    last_row = 1
+
+    for r in range(2, ws.max_row + 1):
+        key_val = ws.cell(r, param_col).value
+        data_val = ws.cell(r, param_col + 1).value
+        if key_val is not None or data_val is not None:
+            last_row = r
+
+        key_norm = _canonical_key(key_val)
+        if key_norm and key_norm not in existing_rows:
+            existing_rows[key_norm] = r
+
+    return existing_rows, last_row
+
+
 def main():
     if not FILLED_PATH.exists():
         print(f"Error: {FILLED_PATH} not found. Run node_coordinate_calculator.py first.")
@@ -62,15 +165,45 @@ def main():
 
     print(f"Reading building info from: {BUILDING_INFO_PATH}")
     ab_pairs, ef_pairs = read_building_info()
+    skip_datadata_keys = {"Front Balcony Width", "Back Balcony Width"}
+    datadata_ab_pairs = [(key, value) for key, value in ab_pairs if key not in skip_datadata_keys]
 
-    # 1. Write A-B pairs to AE-AF in Filleddata
-    wb = load_workbook(FILLED_PATH)
-    ws = wb["Datadata2"]
-    for i, (key, value) in enumerate(ab_pairs, 2):
-        ws.cell(i, 31, key)     # AE: parameter name
-        ws.cell(i, 32, value)   # AF: parameter value
-    wb.save(FILLED_PATH)
-    print(f"Written {len(ab_pairs)} params to AE-AF in Filleddata")
+    # 1. Write A-B pairs to Filleddata — find column dynamically
+    wb = _open_filled_workbook()
+    try:
+        ws = wb["Datadata2"]
+
+        first_key = datadata_ab_pairs[0][0] if datadata_ab_pairs else None
+        param_col = _find_param_col(ws, first_key)
+        if param_col == 31 and _canonical_key(first_key) != _canonical_key(ws.cell(2, 31).value):
+            print(f"  WARNING: Could not find '{first_key}' in row 2, using default col AE")
+
+        existing_rows, last_param_row = _index_existing_params(ws, param_col)
+        updated_count = 0
+        appended_count = 0
+
+        for key, value in datadata_ab_pairs:
+            key_norm = _canonical_key(key)
+            row = existing_rows.get(key_norm)
+
+            if row is None:
+                last_param_row += 1
+                row = last_param_row
+                ws.cell(row, param_col, key)
+                existing_rows[key_norm] = row
+                appended_count += 1
+            else:
+                updated_count += 1
+
+            ws.cell(row, param_col + 1, value)
+
+        wb.save(FILLED_PATH)
+        print(
+            f"Updated {updated_count} params and appended {appended_count} params "
+            f"to col {param_col}-{param_col+1} in Datadata"
+        )
+    finally:
+        wb.close()
 
     # 2. Write E-F pairs to Global_assumptions.csv
     update_global_csv(ef_pairs)

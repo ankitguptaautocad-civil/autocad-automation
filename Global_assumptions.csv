@@ -1,18 +1,33 @@
 Variable,Value
-Seismic status,True
-Fck,30
+Seismic status,TRUE
+Fck,25
 Fy,550
-Slab thickness (mm),150
+Slab thickness (mm),125
 Clear cover (mm),30
 Initial stirrup dia (mm),8
 Initial long bar dia (mm),12
-Min beam bar clear spacing (mm),25
+Min beam bar clear spacing (mm),40
 candidate_b_mm,"[230, 300, 375, 450, 600]"
 candidate_d_before_slab_mm,"[150, 225, 300, 375, 450, 600]"
 seeds_a_json,"{""x0_or_xmax"": [300, 450], ""z0"": [300, 230], ""zmax"": [230, 600]}"
 seed_b_mm,"[230, 600]"
 seed_c_mm,"[300, 230]"
-FY_SV (MPa),415
+FY_SV (MPa),550
+CF_D_max_m,0.9
+CF_concrete_rate_by_fck_json,"{""25"": 4700, ""30"": 4950}"
+strap_clear_cover_mm,50
+strap_stirrup_diameters_json,"[8, 10, 12]"
+strap_steel_rate_rs_per_kg,85
+strap_concrete_rate_rs_per_m3,6000
+strap_shuttering_rate_rs_per_m2,900
+strap_short_span_limit_m,4
+strap_preferred_max_depth_short_mm,750
+strap_preferred_max_depth_general_mm,1050
+strap_min_bottom_moment_factor_direct,0.1
+strap_min_bottom_moment_factor_anchor,0
+CF_grid_pts_min_per_interval,4
+CF_grid_pts_max_per_interval,40
+CF_OWS_STEEL_CREDIT_CAP_PERCENT,0.25
 GAMMA_M_S,1.15
 USE_TL_IN_SR,TRUE
 ENFORCE_25pct_FACE_MIN,TRUE
@@ -22,18 +37,87 @@ hook_type_default,90
 hook_90deg_multiplier,8
 END_REGION_LENGTH_MODE,2d
 BAR_KGPM_json,"{""8"": 0.395, ""10"": 0.617, ""12"": 0.888, ""16"": 1.58, ""20"": 2.47, ""25"": 3.85, ""28"": 4.83, ""32"": 6.31}"
-xu_over_d_table_json,"{""550"": 0.43, ""500"": 0.46, ""415"": 0.48, ""250"": 0.53, ""default"": 0.48}"
+xu_over_d_table_json,"{""550"": 0.44, ""500"": 0.46, ""415"": 0.48, ""250"": 0.53, ""default"": 0.48}"
 tau_c_p_range_json,"[0.15, 3.0]"
 Steel_density (kg/m3),7850
 bar_diameters_json,"[12,16,20,25]"
+PAIR_BACKBONE_MIN_DIA_MM,16
 SEED_MINIMAL_BACKBONE,TRUE
-ALLOW_34_RULE,TRUE
+ALLOW_34_RULE,FALSE
 rho_max_seismic,0.025
 rho_max_nonseismic,0.04
 Aggregates max size (mm),20
 agg_plus_delta_extra_mm,5
-ALLOW_2623_2B,FALSE
+ALLOW_2623_2B,TRUE
 Primary slab max spacing cap (mm),200
 Column clear cover (mm),40
+column min clear spacing,80
 Es (N/mm2),200000
 Epsilon_cu,0.0035
+SCWB,FALSE
+SBC ,150
+Soil displacement,25
+Subgrade Safety Factor,3
+Alpha,0.1
+c_s,0
+c_b,0.05
+Rc,25
+Phi_bot,0.012
+_R_INTERIOR,1
+_R_EDGE,2
+_EDGE_MIN_OVERHANG_X,0.6
+_ROUND_DP,3
+OVERLAP_TOL,0.15
+CF_R_SEED,1
+Wall density,20
+CRACK_COL_RI,0.7
+CRACK_BEAM_RI,0.35
+CRACK_BEAM_T,0.001
+Slab LLFraction,0.25
+Rc,25
+Steel seismic zone,4
+Slab Clear cover (mm),20
+CONCRETE_DENSITY,25
+SDL_CONST_DEFAULT,1.55
+Column Ast buffer percent,5
+Column P buffer percent,5
+Column max segments per stack,1
+Column max building stack groups,10
+Column acceptable group penalty percent,5
+Column high risk steel ratio percent,4
+Column max steel ratio percent,4.5
+Column long dimension min (mm),450
+Column long dimension max (mm),750
+Column short dimension max (mm),300
+Column rescue long threshold (mm),600
+Column rescue upper members count,2
+COLUMN_SIZE_LADDER_MM,"[230, 300, 375, 450, 525, 600, 750]"
+DEFAULT_COLUMN_YD_MM,300
+DEFAULT_COLUMN_ZD_MM,600
+COLUMN_DISALLOWED_ORDERED_SIZES_MM,"[[750, 375]]"
+COLUMN_ALLOW_ONE_STEP_DOWN,FALSE
+COLUMN_STEP_DOWN_TRIGGER_LONG_MM,750
+COLUMN_STEP_DOWN_TRIGGER_SHORT_MM,300
+COLUMN_RESCUE_CAP_LONG_MM,750
+COLUMN_RESCUE_CAP_SHORT_MM,300
+SDL_CONST_STAIR,2.75
+SDL_CONST_TERRACE_DEFAULT,2
+SDL_CONST_BALCONY_DEFAULT,1.65
+Etabs Beam Clear Cover (mm),44
+Etabs Column clear cover (mm),40
+Column Fck,25
+Beam Fck,25
+Slab Fck,25
+Footing Fck,30
+Stiffness buffer,5%
+Stiffness drift code limit,0.004
+Stiffness torsion code limit,1.4
+Stiffness time period code limit,1.25
+Stiffness modal participation code limit,0.65
+Stiffness TxTy separation code limit,0.1
+APPLY_BEAM_TORSION_SHEAR_SAFETY_FACTOR,FALSE
+BEAM_TORSION_SHEAR_SAFETY_FACTOR,1.05
+fix_failing_columns,YES
+column_elimination_enabled,YES
+column_elimination_verify_etabs,YES
+hard_stop_on_etabs_failing_columns,NO
