@@ -208,10 +208,10 @@ def load_beams(ws) -> list[BeamStrip]:
         "beamwidthmm": "Beam width (mm)",
         "beamdepthmm": "Beam depth (mm)",
         "wallthicknessmm": "Wall thickness (mm)",
-        "beamstartxm": "Beam Start X (m)",
-        "beamstartym": "Beam Start Y (m)",
-        "beamendxm": "Beam End X (m)",
-        "beamendym": "Beam End Y (m)",
+        "startnodexm": "Start Node X (m)",
+        "startnodeym": "Start Node Y (m)",
+        "endnodexm": "End Node X (m)",
+        "endnodeym": "End Node Y (m)",
     }
     missing = [label for key, label in required.items() if key not in header_map]
     if missing:
@@ -230,10 +230,10 @@ def load_beams(ws) -> list[BeamStrip]:
                 beam_width_m=float(row[header_map["beamwidthmm"]]) / 1000.0,
                 beam_depth_m=float(row[header_map["beamdepthmm"]]) / 1000.0,
                 wall_thickness_m=float(row[header_map["wallthicknessmm"]]) / 1000.0,
-                start_x=float(row[header_map["beamstartxm"]]),
-                start_y=float(row[header_map["beamstartym"]]),
-                end_x=float(row[header_map["beamendxm"]]),
-                end_y=float(row[header_map["beamendym"]]),
+                start_x=float(row[header_map["startnodexm"]]),
+                start_y=float(row[header_map["startnodeym"]]),
+                end_x=float(row[header_map["endnodexm"]]),
+                end_y=float(row[header_map["endnodeym"]]),
                 source_kind="primary",
             )
         )
@@ -512,13 +512,13 @@ def load_visual_grid_lines(wb) -> tuple[list[float], list[float]]:
         ws = wb["Primary Beams"]
         headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
         header_map = {normalize_header(v): idx for idx, v in enumerate(headers)}
-        required = {"beamstartxm", "beamstartym", "beamendxm", "beamendym"}
+        required = {"startnodexm", "startnodeym", "endnodexm", "endnodeym"}
         if required.issubset(header_map):
             for row in ws.iter_rows(min_row=2, values_only=True):
                 if all(value in (None, "") for value in row):
                     continue
-                xs.update([round(float(row[header_map["beamstartxm"]]), 3), round(float(row[header_map["beamendxm"]]), 3)])
-                ys.update([round(float(row[header_map["beamstartym"]]), 3), round(float(row[header_map["beamendym"]]), 3)])
+                xs.update([round(float(row[header_map["startnodexm"]]), 3), round(float(row[header_map["endnodexm"]]), 3)])
+                ys.update([round(float(row[header_map["startnodeym"]]), 3), round(float(row[header_map["endnodeym"]]), 3)])
 
     if FINAL_SECONDARY_SHEET in wb.sheetnames:
         ws = wb[FINAL_SECONDARY_SHEET]
