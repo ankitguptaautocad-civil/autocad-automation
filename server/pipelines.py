@@ -64,7 +64,23 @@ def run_node_pipeline(scripts_dir: Path, job_dir: Path) -> dict:
         if not s.exists():
             raise PipelineError(f"Script not found: {s}")
 
-    r1 = _run([sys.executable, str(step1)], cwd=job_dir)
+    # Find the column-rectangles upload case-insensitively. The script's own
+    # auto-find uses Path.glob("*typical*..."), which is case-sensitive on
+    # Linux — so an uploaded file named "...TYPICAL..." gets missed on Render
+    # even though it works on Windows. Pass --input explicitly to bypass that.
+    col_xlsx = next(
+        (
+            p for p in job_dir.glob("*.xlsx")
+            if p.name.lower().endswith("_col_rectangles_m_v2_wall_assisted.xlsx")
+        ),
+        None,
+    )
+    if col_xlsx is None:
+        raise PipelineError(
+            "No *_col_rectangles_m_v2_wall_assisted.xlsx found in upload."
+        )
+
+    r1 = _run([sys.executable, str(step1), "--input", str(col_xlsx)], cwd=job_dir)
     r2 = _run([sys.executable, str(step2)], cwd=job_dir)
 
     outputs = sorted(
