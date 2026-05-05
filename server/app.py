@@ -38,6 +38,7 @@ from config import Config, DEFAULT_ADMIN_PASSWORD, DEFAULT_SECRET
 from models import AuditLog, User, db
 from pipelines import (
     PipelineError,
+    run_building_info_pipeline,
     run_dxf_pipeline,
     run_initial_plan_pipeline,
     run_node_pipeline,
@@ -233,6 +234,11 @@ def _register_routes(app: Flask) -> None:
     def initial_plan_page():
         return render_template("initial_plan.html")
 
+    @app.route("/building-info", methods=["GET"])
+    @login_required
+    def building_info_page():
+        return render_template("building_info.html")
+
     @app.route("/api/run/dxf", methods=["POST"])
     @login_required
     @csrf.exempt
@@ -352,6 +358,53 @@ def _register_routes(app: Flask) -> None:
         output_names = [p.name for p in result["outputs"]]
         _log(
             "initial_plan_run", success=True, files=saved,
+            duration=time.time() - started,
+            details=f"outputs={output_names}",
+        )
+        return jsonify(
+            ok=True,
+            job_id=job_dir.name,
+            outputs=output_names,
+            stdout=result["stdout"][-4000:],
+        )
+
+    @app.route("/api/run/building-info", methods=["POST"])
+    @login_required
+    @csrf.exempt
+    def api_run_building_info():
+        _cleanup_old_jobs()
+        files = request.files.getlist("files")
+        # Accept .xlsx (building info + Datadata) and .csv (Global_assumptions)
+        accepted = [
+            f for f in files
+            if f.filename.lower().endswith((".xlsx", ".csv"))
+        ]
+        if not accepted:
+            return jsonify(ok=False, error="No .xlsx / .csv files uploaded."), 400
+
+        job_dir = _new_job_dir()
+        saved = []
+        for f in accepted:
+            dest = job_dir / Path(f.filename).name
+            f.save(dest)
+            saved.append(dest.name)
+
+        started = time.time()
+        try:
+            result = run_building_info_pipeline(Config.SCRIPTS_DIR, job_dir)
+        except PipelineError as e:
+            _log(
+                "building_info_run", success=False, files=saved,
+                duration=time.time() - started,
+                details=f"{e}\nSTDERR:\n{e.stderr[-2000:]}",
+            )
+            return jsonify(
+                ok=False, error=str(e), stdout=e.stdout[-4000:], stderr=e.stderr[-4000:]
+            ), 500
+
+        output_names = [p.name for p in result["outputs"]]
+        _log(
+            "building_info_run", success=True, files=saved,
             duration=time.time() - started,
             details=f"outputs={output_names}",
         )

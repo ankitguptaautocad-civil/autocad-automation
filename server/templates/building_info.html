@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Building Info Sync · StructAuto{% endblock %}
+{% block content %}
+<h1>Building Info Sync</h1>
+<p class="muted">
+  Upload the 3 files: <code>building info.xlsx</code> (source data) +
+  <code>Datadata.xlsx</code> (existing target) +
+  <code>Global_assumptions.csv</code> (existing target).
+  The script merges A-B pairs into <code>Datadata.xlsx</code> AE-AF cols
+  and patches matching keys in <code>Global_assumptions.csv</code>.
+</p>
+
+<div class="card">
+  <div class="row">
+    <button id="pick-folder" class="btn-primary">📁 Pick working folder (outputs save here)</button>
+    <span id="folder-label" class="muted">No folder selected.</span>
+  </div>
+
+  <div class="stack" style="margin-top:1rem">
+    <label>
+      Select 3 files (<code>building info.xlsx</code>, <code>Datadata.xlsx</code>, <code>Global_assumptions.csv</code>)
+      <input id="dxf-input" type="file" accept=".xlsx,.csv" multiple />
+    </label>
+    <ul id="file-list" class="file-list"></ul>
+
+    <button id="run-btn" class="btn-primary" disabled>▶ Run sync</button>
+  </div>
+</div>
+
+<div id="output-card" class="card hidden" style="margin-top:1.5rem">
+  <h3>Result</h3>
+  <div id="status"></div>
+  <ul id="output-list" class="file-list"></ul>
+  <pre id="log" class="log hidden"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/filesystem.js') }}"></script>
+<script>
+  initPipelinePage({
+    kind: "building-info",
+    endpoint: "{{ url_for('api_run_building_info') }}",
+    downloadBase: "/api/download",
+    accept: [".xlsx", ".csv"],
+  });
+</script>
+{% endblock %}

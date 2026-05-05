@@ -17,6 +17,10 @@
     <h2>Initial Plan PDF</h2>
     <p>Upload <code>node_coordinates</code> (+ optional <code>other_coordinates</code>) → get a 3-page review PDF (Plinth / Typical Floor / Terrace).</p>
   </a>
+  <a class="tile tile-building-info" href="{{ url_for('building_info_page') }}">
+    <h2>Building Info Sync</h2>
+    <p>Upload <code>building info.xlsx</code> + <code>Datadata.xlsx</code> + <code>Global_assumptions.csv</code> → get the merged Datadata + patched Global_assumptions.</p>
+  </a>
 </div>
 
 <div class="card" style="margin-top:2rem">
@@ -26,6 +30,7 @@
     <li>Open <strong>DXF Pipeline</strong> here → upload 3 DXFs → save outputs to your project folder.</li>
     <li>Open <strong>Node Pipeline</strong> here → upload the 2 DXF outputs + the nonplinth secondary file + <code>building info.xlsx</code> → save final results.</li>
     <li>Open <strong>Initial Plan PDF</strong> here → upload the <code>node_coordinates</code> Excel (and optionally <code>other_coordinates</code>) → download the 3-page review PDF.</li>
+    <li>Open <strong>Building Info Sync</strong> here → upload <code>building info.xlsx</code>, <code>Datadata.xlsx</code>, <code>Global_assumptions.csv</code> → download the merged outputs.</li>
   </ol>
 </div>
 {% endblock %}

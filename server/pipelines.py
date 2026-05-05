@@ -124,3 +124,62 @@ def run_initial_plan_pipeline(scripts_dir: Path, job_dir: Path) -> dict:
 
     outputs = sorted(p for p in job_dir.glob("*.pdf"))
     return {"stdout": result.stdout, "stderr": result.stderr, "outputs": outputs}
+
+
+def run_building_info_pipeline(scripts_dir: Path, job_dir: Path) -> dict:
+    """Run building_info.py on the 3 uploaded files.
+
+    Inputs (all required, must be in job_dir, names matched case-insensitively):
+      - building info.xlsx        (source data — read only)
+      - Datadata.xlsx             (read existing AE-AF + write merged)
+      - Global_assumptions.csv    (patch matching keys + rewrite)
+
+    Outputs (modified in place; both returned for download):
+      - Datadata.xlsx
+      - Global_assumptions.csv
+    """
+    script = scripts_dir / "building_info.py"
+    if not script.exists():
+        raise PipelineError(f"Script not found: {script}")
+
+    bi = next(
+        (p for p in job_dir.iterdir()
+         if p.is_file() and p.name.lower() == "building info.xlsx"),
+        None,
+    )
+    dd = next(
+        (p for p in job_dir.iterdir()
+         if p.is_file() and p.name.lower() == "datadata.xlsx"),
+        None,
+    )
+    gl = next(
+        (p for p in job_dir.iterdir()
+         if p.is_file() and p.name.lower() == "global_assumptions.csv"),
+        None,
+    )
+
+    missing = []
+    if bi is None:
+        missing.append("building info.xlsx")
+    if dd is None:
+        missing.append("Datadata.xlsx")
+    if gl is None:
+        missing.append("Global_assumptions.csv")
+    if missing:
+        raise PipelineError(
+            "Missing required upload(s): " + ", ".join(missing)
+        )
+
+    cmd = [
+        sys.executable, str(script),
+        "--building-info", str(bi),
+        "--datadata", str(dd),
+        "--globals", str(gl),
+    ]
+    result = _run(cmd, cwd=job_dir)
+
+    return {
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "outputs": [dd, gl],
+    }
