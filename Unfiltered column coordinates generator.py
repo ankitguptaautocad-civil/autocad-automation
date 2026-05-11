@@ -2344,7 +2344,7 @@ def secondary_row_values(
     if floor == "Plinth":
         span_m = end - start
         if beam.beam_class == "Edge":
-            beam_depth_mm = 300
+            beam_depth_mm = 375
         elif span_m <= 4.0:
             beam_depth_mm = 375
         elif span_m < 7.0:
@@ -2528,7 +2528,7 @@ def write_output(
                 wall_thickness_value = wall_thickness_mm
             if floor == "Plinth":
                 if beam.beam_class == "Edge":
-                    beam_depth_mm = 300
+                    beam_depth_mm = 375
                 elif beam.span_length_m <= 4.0:
                     beam_depth_mm = 375
                 elif beam.span_length_m < 7.0:
@@ -2554,6 +2554,8 @@ def write_output(
                         if not beam_overlaps_excluded_zone(beam, rectangles or []):
                             wall_thickness_value = 40
             wall_coverage_value = raw_wall_coverage_pct
+            if floor == "Plinth" and wall_thickness_value == 0:
+                wall_thickness_value = 90
 
             ws_beams.append(
                 [

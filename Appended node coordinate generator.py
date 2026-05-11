@@ -1503,7 +1503,10 @@ def write_final_secondary_sheet(wb, rows: list[list[object]]) -> tuple[list[floa
     xs: list[float] = []
     ys: list[float] = []
     for row in rows:
-        ws.append([v for i, v in enumerate(row) if i not in _skip_sec])
+        filtered = [v for i, v in enumerate(row) if i not in _skip_sec]
+        if str(row[7] or "").strip() == "Plinth" and (row[11] == 0 or row[11] == 0.0):
+            filtered[5] = 90
+        ws.append(filtered)
         xs.extend([float(row[12]), float(row[14])])
         ys.extend([float(row[13]), float(row[15])])
     for cell in ws[1]:
@@ -1535,7 +1538,7 @@ def append_primary_beam_present_column(ws_beams) -> None:
 
 
 def prune_main_workbook(wb) -> None:
-    keep_order = ["Columns", "Primary Beams", FINAL_SECONDARY_SHEET, SHEAR_WALL_TEMPLATE_SHEET, COLUMN_LANDSCAPE_TEMPLATE_SHEET]
+    keep_order = ["Columns", "Primary Beams", FINAL_SECONDARY_SHEET, "Extra column", SHEAR_WALL_TEMPLATE_SHEET, COLUMN_LANDSCAPE_TEMPLATE_SHEET]
     for sheet_name in list(wb.sheetnames):
         if sheet_name not in keep_order:
             del wb[sheet_name]
@@ -1707,6 +1710,22 @@ def main() -> None:
     write_final_secondary_sheet(wb, final_secondary_rows)
     if "Node spacing review" in wb.sheetnames:
         del wb["Node spacing review"]
+    if "Extra column" not in wb.sheetnames:
+        ws_extra = wb.create_sheet("Extra column")
+        ws_extra.append([
+            "Extra Column",
+            "extra_col_x",
+            "extra_col_z",
+            "extra_col_yd",
+            "extra_col_zd",
+            "extra_col_orientation",
+            "extra_beam_x_loc",
+            "extra_beam_y_loc",
+            "extra_beam_width_x_mm",
+            "extra_beam_width_y_mm",
+        ])
+        for cell in ws_extra[1]:
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     prune_main_workbook(wb)
     align_new_headers(ws_cols, ws_beams, wb[SHEAR_WALL_TEMPLATE_SHEET], wb[COLUMN_LANDSCAPE_TEMPLATE_SHEET])
     wb.save(output_path)
