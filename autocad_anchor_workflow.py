@@ -28,6 +28,7 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.worksheet.datavalidation import DataValidation
 
 try:
     from pyautocad import Autocad, APoint
@@ -1873,8 +1874,9 @@ def _build_secondary_beam_sheet_generic(ws, data, scale_m_per_unit, origin, pref
         "Coordinate X2 (m)", "Coordinate Y2 (m)",
         "Beam location", "Floor", "Present",
         "Beam width (mm)", "Beam depth (mm)", "Wall thickness (mm)",
+        "None beam (YES/NO)",
     ]
-    widths = [6, 8, 18, 18, 18, 18, 16, 16, 10, 18, 18, 18]
+    widths = [6, 8, 18, 18, 18, 18, 16, 16, 10, 18, 18, 18, 20]
     _write_header(ws, headers, widths)
 
     ox, oy = origin
@@ -1916,12 +1918,24 @@ def _build_secondary_beam_sheet_generic(ws, data, scale_m_per_unit, origin, pref
                 fd["beam_width"],
                 fd["beam_depth"],
                 fd["wall_thickness"],
+                "",  # None beam (YES/NO) — left blank; user picks from dropdown
             ])
             shade_idx = min(floor_idx, len(beam_colors) - 1)
             fill = PatternFill("solid", fgColor=beam_colors[shade_idx])
             for col_idx in range(1, len(headers) + 1):
                 ws.cell(row=row, column=col_idx).fill = fill
             row += 1
+
+    # Attach a YES/NO dropdown to the "None beam (YES/NO)" column for every
+    # data row written above. Column M is the 13th (= "None beam").
+    if row > 2:
+        dv = DataValidation(type="list", formula1='"YES,NO"', allow_blank=True)
+        dv.error = "Pick YES or NO"
+        dv.errorTitle = "Invalid input"
+        dv.prompt = "Mark this beam as 'None' if it should be omitted from the floor."
+        dv.promptTitle = "None beam"
+        ws.add_data_validation(dv)
+        dv.add(f"M2:M{row - 1}")
 
 
 def build_secondary_beam_plinth_sheet(ws, data, scale_m_per_unit, origin):

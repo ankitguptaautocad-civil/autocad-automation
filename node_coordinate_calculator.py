@@ -43,6 +43,7 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl.worksheet.datavalidation import DataValidation
 
 SNAP_TOLERANCE = 0.5  # meters
 # # ── Old threshold (kept for reference) ──
@@ -1391,11 +1392,29 @@ def write_output(columns, node_coords, raw_rows, beam_rows, rect_rows, balcony_r
                    "Coordinate X2 (m)", "Coordinate Y2 (m)", "Beam location",
                    "Floor", "Present", "Beam width (mm)", "Beam depth (mm)",
                    "Wall thickness (mm)", "Snapped X1 (m)", "Snapped Y1 (m)",
-                   "Snapped X2 (m)", "Snapped Y2 (m)"]
-        widths = [6, 8, 18, 18, 18, 18, 16, 16, 10, 18, 18, 18, 18, 18, 18, 18]
+                   "Snapped X2 (m)", "Snapped Y2 (m)", "None beam (YES/NO)"]
+        widths = [6, 8, 18, 18, 18, 18, 16, 16, 10, 18, 18, 18, 18, 18, 18, 18, 20]
         _write_header(ws_sec, headers, widths)
+        last_data_row = 1
         for ri, row_data in enumerate(sec_beam_rows, 2):
-            _write_row(ws_sec, ri, list(row_data))
+            row_list = list(row_data)
+            # Pad the row out to the new column count so the dropdown sits in
+            # a real cell. Whatever 17th value is already present (if the
+            # upstream input excel had it filled) is preserved.
+            while len(row_list) < len(headers):
+                row_list.append("")
+            _write_row(ws_sec, ri, row_list)
+            last_data_row = ri
+
+        # YES/NO dropdown on the "None beam (YES/NO)" column (Q = 17th col).
+        if last_data_row >= 2:
+            dv = DataValidation(type="list", formula1='"YES,NO"', allow_blank=True)
+            dv.error = "Pick YES or NO"
+            dv.errorTitle = "Invalid input"
+            dv.prompt = "Mark this beam as 'None' if it should be omitted."
+            dv.promptTitle = "None beam"
+            ws_sec.add_data_validation(dv)
+            dv.add(f"Q2:Q{last_data_row}")
 
     wb_node.save(output_path)
     print(f"Node coordinates saved: {output_path}")

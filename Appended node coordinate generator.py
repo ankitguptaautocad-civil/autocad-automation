@@ -1506,6 +1506,7 @@ def write_final_secondary_sheet(wb, rows: list[list[object]]) -> tuple[list[floa
             "Snapped Y1 (m)",
             "Snapped X2 (m)",
             "Snapped Y2 (m)",
+            "None beam (YES/NO)",
         ]
     )
     _skip_sec = {2, 3, 4, 5, 6, 8}
@@ -1515,16 +1516,31 @@ def write_final_secondary_sheet(wb, rows: list[list[object]]) -> tuple[list[floa
         filtered = [v for i, v in enumerate(row) if i not in _skip_sec]
         if str(row[7] or "").strip() == "Plinth" and (row[11] == 0 or row[11] == 0.0):
             filtered[5] = 90
+        # Pass-through "None beam (YES/NO)" if the upstream input row had it
+        # (index 16 = 17th column in the raw secondary sheet); otherwise blank.
+        none_beam_val = row[16] if len(row) > 16 else ""
+        filtered.append(none_beam_val if none_beam_val is not None else "")
         ws.append(filtered)
         xs.extend([float(row[12]), float(row[14])])
         ys.extend([float(row[13]), float(row[15])])
     for cell in ws[1]:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     autosize = {
-        "A": 7, "B": 8, "C": 18, "D": 10, "E": 10, "F": 10, "G": 12, "H": 12, "I": 12, "J": 12,
+        "A": 7, "B": 8, "C": 18, "D": 10, "E": 10, "F": 10,
+        "G": 12, "H": 12, "I": 12, "J": 12, "K": 20,
     }
     for column_letter, width in autosize.items():
         ws.column_dimensions[column_letter].width = width
+
+    # Attach a YES/NO dropdown to the "None beam (YES/NO)" column (K).
+    if ws.max_row >= 2:
+        none_dv = DataValidation(type="list", formula1='"YES,NO"', allow_blank=True)
+        none_dv.error = "Pick YES or NO"
+        none_dv.errorTitle = "Invalid input"
+        none_dv.prompt = "Mark this beam as 'None' if it should be omitted from the floor."
+        none_dv.promptTitle = "None beam"
+        ws.add_data_validation(none_dv)
+        none_dv.add(f"K2:K{ws.max_row}")
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(horizontal="center", vertical="center")
