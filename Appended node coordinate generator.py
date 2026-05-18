@@ -550,22 +550,23 @@ def _read_building_info(path: Path) -> dict:
 
 
 def _generate_elevation_yd_zd(info: dict) -> tuple[list[str], list[int]]:
-    y0_shift = float(info["Y = 0 Shift Above Base"])
+    foundation_height = float(info["Foundation height"])
+    stilt_height = float(info["Stilt height"])
     floors = int(info["Floors"])
     story_height = float(info["Story height"])
-    mumty_height = float(info["Mumty height"])
-    elevations: list[float] = [-y0_shift, 0.0]
-    cumulative = 0.0
+    default_yd = int(round(float(info["DEFAULT_COLUMN_YD_MM"])))
+    default_zd = int(round(float(info["DEFAULT_COLUMN_ZD_MM"])))
+    elevations: list[float] = [-foundation_height, 0.0, round(stilt_height, 3)]
+    cumulative = stilt_height
     for _ in range(floors - 1):
         cumulative = round(cumulative + story_height, 3)
         elevations.append(cumulative)
-    elevations.append(round(cumulative + mumty_height, 3))
     headers: list[str] = []
     defaults: list[int] = []
     for elev in elevations:
         elev_str = f"{elev:g}"
         headers.extend([f"YD({elev_str})", f"ZD({elev_str})"])
-        defaults.extend([300, 600])
+        defaults.extend([default_yd, default_zd])
     return headers, defaults
 
 
@@ -1059,13 +1060,21 @@ def write_other_coordinates_workbook(
 
     if balcony_rows:
         ws_bal = wb.create_sheet("Balcony coordinates")
-        headers = ["Location", "Coordinate X1 (m)", "Coordinate Y1 (m)", "Coordinate X2 (m)", "Coordinate Y2 (m)"]
-        widths = [20, 18, 18, 18, 18]
+        headers = ["Location", "Coordinate X1 (m)", "Coordinate Y1 (m)", "Coordinate X2 (m)", "Coordinate Y2 (m)", "Cantilever slab (YES/NO)"]
+        widths = [20, 18, 18, 18, 18, 22]
         ws_bal.append(headers)
         for row in balcony_rows:
-            ws_bal.append(list(row))
+            ws_bal.append(list(row) + [None])
         for idx, width in enumerate(widths, start=1):
             ws_bal.column_dimensions[get_column_letter(idx)].width = width
+        if len(balcony_rows) > 0:
+            cantilever_dv = DataValidation(type="list", formula1='"YES,NO"', allow_blank=True)
+            cantilever_dv.error = "Please choose YES or NO from the dropdown."
+            cantilever_dv.errorTitle = "Invalid entry"
+            cantilever_dv.prompt = "Select YES if this balcony is a cantilever slab, otherwise NO."
+            cantilever_dv.promptTitle = "Cantilever slab"
+            ws_bal.add_data_validation(cantilever_dv)
+            cantilever_dv.add(f"F2:F{1 + len(balcony_rows)}")
         for row in ws_bal.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)

@@ -72,6 +72,18 @@ class SignedShearWall:
     thickness_m: float
 
 
+@dataclass(frozen=True)
+class ExtraWall:
+    label: str
+    floor: str
+    axis: str
+    start_x: float
+    start_y: float
+    end_x: float
+    end_y: float
+    thickness_m: float
+
+
 def normalize_header(value: object) -> str:
     return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
 
@@ -563,6 +575,75 @@ def shear_wall_rect(wall: SignedShearWall) -> tuple[float, float, float, float]:
     return x - half, y1, wall.thickness_m, y2 - y1
 
 
+def extra_wall_rect(wall: ExtraWall) -> tuple[float, float, float, float]:
+    if wall.axis == "X":
+        x1 = min(wall.start_x, wall.end_x)
+        x2 = max(wall.start_x, wall.end_x)
+        y = (wall.start_y + wall.end_y) / 2.0
+        half = wall.thickness_m / 2.0
+        return x1, y - half, x2 - x1, wall.thickness_m
+    x = (wall.start_x + wall.end_x) / 2.0
+    y1 = min(wall.start_y, wall.end_y)
+    y2 = max(wall.start_y, wall.end_y)
+    half = wall.thickness_m / 2.0
+    return x - half, y1, wall.thickness_m, y2 - y1
+
+
+def load_extra_walls(ws) -> list[ExtraWall]:
+    """Read the 'Extra walls (filtered)' sheet from the other-coordinates workbook.
+
+    The sheet writes the 'Extra Wall' label only on the first floor row of each
+    wall (continuation floor rows leave it blank). This loader forward-fills the
+    label across continuation rows, filters to Present='YES', validates the four
+    coordinates, derives the axis with EPS tolerance, and skips degenerate or
+    diagonal entries.
+    """
+    headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    header_map = {normalize_header(v): idx for idx, v in enumerate(headers)}
+    required = ("extrawall", "startx", "startz", "endx", "endz", "wallthicknessmm", "floor", "present")
+    if not all(key in header_map for key in required):
+        return []
+
+    walls: list[ExtraWall] = []
+    prev_label = ""
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if all(value in (None, "") for value in row):
+            continue
+        raw_label = row[header_map["extrawall"]]
+        if raw_label not in (None, ""):
+            prev_label = str(raw_label).strip()
+        label = prev_label
+        if safe_text(row[header_map["present"]]).upper() != "YES":
+            continue
+        x1 = safe_float(row[header_map["startx"]])
+        y1 = safe_float(row[header_map["startz"]])
+        x2 = safe_float(row[header_map["endx"]])
+        y2 = safe_float(row[header_map["endz"]])
+        if x1 is None or y1 is None or x2 is None or y2 is None:
+            continue
+        thickness_mm = safe_float(row[header_map["wallthicknessmm"]])
+        if thickness_mm is None or thickness_mm <= 0:
+            continue
+        floor = safe_text(row[header_map["floor"]])
+        if abs(y1 - y2) <= EPS and abs(x1 - x2) > EPS:
+            axis = "X"
+        elif abs(x1 - x2) <= EPS and abs(y1 - y2) > EPS:
+            axis = "Y"
+        else:
+            continue
+        walls.append(ExtraWall(
+            label=label,
+            floor=floor,
+            axis=axis,
+            start_x=x1,
+            start_y=y1,
+            end_x=x2,
+            end_y=y2,
+            thickness_m=thickness_mm / 1000.0,
+        ))
+    return walls
+
+
 def vertical_grid_label(index: int) -> str:
     return str(index + 1)
 
@@ -583,6 +664,7 @@ def compute_bounds(
     beams: list[BeamStrip],
     shear_walls: list[SignedShearWall] | None = None,
     features: list[FeatureRect] | None = None,
+    extra_walls: list[ExtraWall] | None = None,
 ) -> tuple[float, float, float, float]:
     min_x = min(column.node_x - column.draw_w * 0.5 for column in columns)
     max_x = max(column.node_x + column.draw_w * 0.5 for column in columns)
@@ -613,6 +695,12 @@ def compute_bounds(
         max_x = max(max_x, fx2)
         min_y = min(min_y, fy1)
         max_y = max(max_y, fy2)
+    for wall in extra_walls or []:
+        wx, wy, ww, wh = extra_wall_rect(wall)
+        min_x = min(min_x, wx)
+        max_x = max(max_x, wx + ww)
+        min_y = min(min_y, wy)
+        max_y = max(max_y, wy + wh)
     return min_x, min_y, max_x, max_y
 
 
@@ -785,6 +873,7 @@ def draw_page(
     rectangles: list[FeatureRect],
     balconies: list[FeatureRect],
     staircases: list[FeatureRect],
+    extra_walls: list[ExtraWall],
     grid_x: list[float],
     grid_y: list[float],
     transform: Transform,
@@ -795,7 +884,7 @@ def draw_page(
 
     # Title.
     c.fill_color(0, 0, 0)
-    c.text(42, PAGE_HEIGHT_PT - 20, f"Initial Structural Plan - {page_title}", size=14, font="F2")
+    c.text(42, PAGE_HEIGHT_PT - PAGE_MARGIN_PT - 4, f"Initial Structural Plan - {page_title}", size=14, font="F2")
 
     # Compact right panel: grid tables then vertical legend.
     panel_x = PAGE_WIDTH_PT - 140
@@ -853,6 +942,7 @@ def draw_page(
     _leg("Secondary beam", 0.10, 0.32, 0.82, False)
     _leg("Primary wall", 0.88, 0.15, 0.15, True)
     _leg("Secondary wall", 0.55, 0.33, 0.16, True)
+    _leg("Extra wall", 0.65, 0.10, 0.65, True)
     _leg("Shear wall", 0.35, 0.10, 0.10, True)
     _leg("Balcony", 0.16, 0.50, 0.20, False, dashed=True)
     _leg("Staircase", 0.82, 0.46, 0.10, False, dashed=True)
@@ -923,6 +1013,14 @@ def draw_page(
         px, py, pw, ph = transform.rect(wx, wy, ww, wh)
         c.fill_color(0.55, 0.33, 0.16)
         c.stroke_color(0.55, 0.33, 0.16)
+        c.rect(px, py, pw, ph, "B")
+
+    # Extra walls (filtered from the other-coordinates workbook).
+    for wall in extra_walls:
+        wx, wy, ww, wh = extra_wall_rect(wall)
+        px, py, pw, ph = transform.rect(wx, wy, ww, wh)
+        c.fill_color(0.65, 0.10, 0.65)
+        c.stroke_color(0.65, 0.10, 0.65)
         c.rect(px, py, pw, ph, "B")
 
     # Signed shear walls from the wall recommendation/landscape sheet.
@@ -1078,6 +1176,7 @@ def main() -> None:
     balconies: list[FeatureRect] = []
     rectangles: list[FeatureRect] = []
     staircases: list[FeatureRect] = []
+    extra_walls: list[ExtraWall] = []
     if other_geometry_path is not None:
         other_wb = load_workbook(other_geometry_path, data_only=True)
         if "Rectangle coordinates" in other_wb.sheetnames:
@@ -1086,7 +1185,11 @@ def main() -> None:
             balconies = load_feature_rects(other_wb["Balcony coordinates"], "nonplinth", "balcony")
         if "Staircase details" in other_wb.sheetnames:
             staircases = load_feature_rects(other_wb["Staircase details"], "nonplinth", "staircase")
+        if "Extra walls (filtered)" in other_wb.sheetnames:
+            extra_walls = load_extra_walls(other_wb["Extra walls (filtered)"])
         other_wb.close()
+
+    floor_extra_walls = {floor: [w for w in extra_walls if w.floor == floor] for floor, _ in FLOOR_PAGES}
 
     all_features = rectangles + balconies + staircases
     bounds = compute_bounds(
@@ -1094,6 +1197,7 @@ def main() -> None:
         [beam for floor in floor_primary_beams.values() for beam in floor] + [beam for floor in floor_secondary_beams.values() for beam in floor],
         signed_shear_walls,
         all_features,
+        extra_walls,
     )
     transform = Transform(*bounds)
 
@@ -1120,6 +1224,7 @@ def main() -> None:
                 floor_rectangles,
                 floor_balconies,
                 floor_staircases,
+                floor_extra_walls[floor_key],
                 grid_x,
                 grid_y,
                 transform,
@@ -1132,8 +1237,10 @@ def main() -> None:
     print(f"Columns drawn  : {len(columns)}")
     if signed_shear_walls:
         print(f"Signed walls   : {len(signed_shear_walls)} from {signed_wall_source}")
+    if extra_walls:
+        print(f"Extra walls    : {len(extra_walls)} (across all floors)")
     for floor_key, page_title in FLOOR_PAGES:
-        print(f"{page_title}: {len(floor_primary_beams[floor_key])} primary, {len(floor_secondary_beams[floor_key])} secondary")
+        print(f"{page_title}: {len(floor_primary_beams[floor_key])} primary, {len(floor_secondary_beams[floor_key])} secondary, {len(floor_extra_walls[floor_key])} extra walls")
 
 
 if __name__ == "__main__":
