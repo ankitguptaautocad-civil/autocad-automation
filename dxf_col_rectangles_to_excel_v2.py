@@ -269,24 +269,44 @@ def auto_tag_rects(
     x_grid_tolerance_m: float,
     y_grid_tolerance_m: float,
 ) -> dict[int, tuple[str | None, str | None, str | None]]:
-    x_faces: list[Face] = []
-    y_faces: list[Face] = []
-    for rect in local_rects:
-        x_faces.extend(
-            [
-                Face(rect_idx=rect.idx, side="Left", value_m=rect.xmin_m),
-                Face(rect_idx=rect.idx, side="Right", value_m=rect.xmax_m),
-            ]
-        )
-        y_faces.extend(
-            [
-                Face(rect_idx=rect.idx, side="Front", value_m=rect.ymin_m),
-                Face(rect_idx=rect.idx, side="Back", value_m=rect.ymax_m),
-            ]
-        )
+    # Build face lists SEPARATED BY SIDE. Previously all four side values
+    # (Left/Right Xs and Front/Back Ys) were lumped into two single lists and
+    # clustered together — which incorrectly let a Left face cluster with a
+    # Right face, and a Front face cluster with a Back face. That mismatch
+    # caused columns like C7 (whose Front face was geometrically close to
+    # OTHER columns' Back faces) to be mis-tagged as "Front" when their beam
+    # actually attaches on the Back face. With side-separated clustering,
+    # only same-side faces influence each side's family size.
+    left_faces = [Face(rect_idx=r.idx, side="Left",  value_m=r.xmin_m) for r in local_rects]
+    right_faces = [Face(rect_idx=r.idx, side="Right", value_m=r.xmax_m) for r in local_rects]
+    front_faces = [Face(rect_idx=r.idx, side="Front", value_m=r.ymin_m) for r in local_rects]
+    back_faces  = [Face(rect_idx=r.idx, side="Back",  value_m=r.ymax_m) for r in local_rects]
 
-    x_families, x_lookup = build_families(x_faces, x_grid_tolerance_m)
-    y_families, y_lookup = build_families(y_faces, y_grid_tolerance_m)
+    # Keep combined x_faces / y_faces around for Pass 2 below.
+    x_faces = left_faces + right_faces
+    y_faces = front_faces + back_faces
+
+    def _combine_side_families(
+        low_fs: list[Face], high_fs: list[Face], tol: float
+    ) -> tuple[list[Family], dict[tuple[int, str], int]]:
+        """Build families for the two sides independently, then offset the
+        high-side indices and concatenate. The downstream `choose_x_tag`,
+        `choose_y_tag`, and consensus refinement code reads from a single
+        (families, lookup) pair via `lookup[(rect_idx, side)]`, so this keeps
+        their signatures unchanged while guaranteeing low-side and high-side
+        faces never share a family.
+        """
+        low_families, low_lookup = build_families(low_fs, tol)
+        high_families, high_lookup = build_families(high_fs, tol)
+        offset = len(low_families)
+        combined_families = list(low_families) + list(high_families)
+        combined_lookup = dict(low_lookup)
+        for key, value in high_lookup.items():
+            combined_lookup[key] = value + offset
+        return combined_families, combined_lookup
+
+    x_families, x_lookup = _combine_side_families(left_faces, right_faces, x_grid_tolerance_m)
+    y_families, y_lookup = _combine_side_families(front_faces, back_faces, y_grid_tolerance_m)
     global_min_x = min(rect.xmin_m for rect in local_rects)
     global_max_x = max(rect.xmax_m for rect in local_rects)
     global_min_y = min(rect.ymin_m for rect in local_rects)
@@ -342,9 +362,11 @@ def auto_tag_rects(
     unresolved = {idx for idx, (xt, yt, _) in tags.items() if xt is None or yt is None}
 
     if unresolved:
-        # Rebuild families with relaxed tolerance — merges nearby size-1 families
-        relaxed_x_families, relaxed_x_lookup = build_families(x_faces, relaxed_x_tol)
-        relaxed_y_families, relaxed_y_lookup = build_families(y_faces, relaxed_y_tol)
+        # Rebuild families with relaxed tolerance — merges nearby size-1 families.
+        # Still SIDE-SEPARATED so Left/Right and Front/Back never cross-cluster
+        # even at the 2× tolerance.
+        relaxed_x_families, relaxed_x_lookup = _combine_side_families(left_faces, right_faces, relaxed_x_tol)
+        relaxed_y_families, relaxed_y_lookup = _combine_side_families(front_faces, back_faces, relaxed_y_tol)
 
         for idx in unresolved:
             rect = rect_by_idx[idx]

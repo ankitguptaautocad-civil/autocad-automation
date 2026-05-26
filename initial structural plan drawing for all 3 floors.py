@@ -24,6 +24,8 @@ FINAL_SECONDARY_SHEET = "Secondary beam coordinates"
 SHEAR_WALL_SOURCE_SHEETS = ("Final_Recommendation_Walls", "Shear wall landscape")
 EPS = 1e-9
 
+DEBUG_SNAP_TOLERANCE_M = 0.300
+
 
 @dataclass(frozen=True)
 class ColumnRect:
@@ -33,6 +35,8 @@ class ColumnRect:
     node_y: float = 0.0
     draw_w: float = 0.0
     draw_h: float = 0.0
+    left_right: str = ""
+    front_back: str = ""
 
 
 @dataclass(frozen=True)
@@ -186,10 +190,9 @@ def load_columns(ws) -> list[ColumnRect]:
     for row in ws.iter_rows(min_row=2, values_only=True):
         if all(value in (None, "") for value in row):
             continue
-        column_no = ""
-        if "columnno" in header_map and row[header_map["columnno"]] not in (None, ""):
-            raw_column_no = str(row[header_map["columnno"]]).strip()
-            column_no = raw_column_no if raw_column_no.upper().startswith("C") else f"C{raw_column_no}"
+        type_name = str(row[header_map["type"]]).strip()
+        lr = str(row[header_map["leftright"]] or "").strip() if "leftright" in header_map else ""
+        fb = str(row[header_map["frontback"]] or "").strip() if "frontback" in header_map else ""
         node_x = float(row[header_map["nodecoordinatexm"]])
         node_y = float(row[header_map["nodecoordinateym"]])
         yd_raw = row[header_map[yd_key]] if yd_key is not None else None
@@ -198,12 +201,14 @@ def load_columns(ws) -> list[ColumnRect]:
         draw_h = float(zd_raw) / 1000.0 if zd_raw not in (None, "") else 0.3
         records.append(
             ColumnRect(
-                type_name=column_no or str(row[header_map["type"]]).strip(),
+                type_name=type_name,
                 location=str(row[header_map["location"]] or "").strip(),
                 node_x=node_x,
                 node_y=node_y,
                 draw_w=draw_w,
                 draw_h=draw_h,
+                left_right=lr,
+                front_back=fb,
             )
         )
     return records
@@ -659,6 +664,38 @@ def horizontal_grid_label(index: int) -> str:
         value -= 1
 
 
+NODE_FACE_OFFSET_M = 0.115
+
+
+def column_origin(col: ColumnRect) -> tuple[float, float]:
+    """Compute the bottom-left corner (xmin, ymin) of a column rectangle
+    based on node position and Left/Right + Front/Back anchor labels.
+
+    The node sits 115mm inward from the anchor face (half the typical
+    230mm beam width). Knowing which face the anchor is on tells us
+    which side of the node the column extends toward.
+
+    Left:  anchor face = Xmin → node = Xmin + 115mm → rect Xmin = node - 115mm
+    Right: anchor face = Xmax → node = Xmax - 115mm → rect Xmin = node - (draw_w - 115mm)
+    Front: anchor face = Ymin → node = Ymin + 115mm → rect Ymin = node - 115mm
+    Back:  anchor face = Ymax → node = Ymax - 115mm → rect Ymin = node - (draw_h - 115mm)
+    """
+    if col.left_right == "Left":
+        ox = col.node_x - NODE_FACE_OFFSET_M
+    elif col.left_right == "Right":
+        ox = col.node_x - (col.draw_w - NODE_FACE_OFFSET_M)
+    else:
+        ox = col.node_x - col.draw_w * 0.5
+
+    if col.front_back == "Front":
+        oy = col.node_y - NODE_FACE_OFFSET_M
+    elif col.front_back == "Back":
+        oy = col.node_y - (col.draw_h - NODE_FACE_OFFSET_M)
+    else:
+        oy = col.node_y - col.draw_h * 0.5
+    return ox, oy
+
+
 def compute_bounds(
     columns: list[ColumnRect],
     beams: list[BeamStrip],
@@ -666,10 +703,10 @@ def compute_bounds(
     features: list[FeatureRect] | None = None,
     extra_walls: list[ExtraWall] | None = None,
 ) -> tuple[float, float, float, float]:
-    min_x = min(column.node_x - column.draw_w * 0.5 for column in columns)
-    max_x = max(column.node_x + column.draw_w * 0.5 for column in columns)
-    min_y = min(column.node_y - column.draw_h * 0.5 for column in columns)
-    max_y = max(column.node_y + column.draw_h * 0.5 for column in columns)
+    min_x = min(column_origin(c)[0] for c in columns)
+    max_x = max(column_origin(c)[0] + c.draw_w for c in columns)
+    min_y = min(column_origin(c)[1] for c in columns)
+    max_y = max(column_origin(c)[1] + c.draw_h for c in columns)
     for beam in beams:
         bx, by, bw, bh = beam_rect(beam, beam.beam_width_m)
         min_x = min(min_x, bx)
@@ -1103,7 +1140,8 @@ def draw_page(
 
     # Columns on top.
     for column in columns:
-        px, py, pw, ph = transform.rect(column.node_x - column.draw_w * 0.5, column.node_y - column.draw_h * 0.5, column.draw_w, column.draw_h)
+        ox, oy = column_origin(column)
+        px, py, pw, ph = transform.rect(ox, oy, column.draw_w, column.draw_h)
         c.fill_color(0.78, 0.78, 0.78)
         c.stroke_color(0, 0, 0)
         c.line_width(0.8)
@@ -1126,6 +1164,180 @@ def draw_page(
         id_y = py + max(1.2, ph - (id_font + 1.8))
         c.fill_color(0, 0, 0)
         c.text(id_x, id_y, column.type_name, size=id_font, font="F2")
+
+    return c.content()
+
+
+def collect_debug_values(
+    columns: list[ColumnRect],
+    primary_beams: list[BeamStrip],
+    secondary_beams: list[BeamStrip],
+    shear_walls: list[SignedShearWall],
+    rectangles: list[FeatureRect],
+    balconies: list[FeatureRect],
+    staircases: list[FeatureRect],
+    extra_walls: list[ExtraWall],
+) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """Walk every loaded entity and collect (source_label, X) and (source_label, Y)
+    pairs. Used to feed the debug-page sorted tables (A1 / A2)."""
+    x_entries: list[tuple[str, float]] = []
+    y_entries: list[tuple[str, float]] = []
+
+    for col in columns:
+        x_entries.append(("Column", col.node_x))
+        y_entries.append(("Column", col.node_y))
+
+    for beam in primary_beams:
+        x_entries.append(("Primary beam", beam.start_x))
+        x_entries.append(("Primary beam", beam.end_x))
+        y_entries.append(("Primary beam", beam.start_y))
+        y_entries.append(("Primary beam", beam.end_y))
+
+    for beam in secondary_beams:
+        x_entries.append(("Secondary beam", beam.start_x))
+        x_entries.append(("Secondary beam", beam.end_x))
+        y_entries.append(("Secondary beam", beam.start_y))
+        y_entries.append(("Secondary beam", beam.end_y))
+
+    for wall in shear_walls:
+        x_entries.append(("Shear wall", wall.x1))
+        x_entries.append(("Shear wall", wall.x2))
+        y_entries.append(("Shear wall", wall.y1))
+        y_entries.append(("Shear wall", wall.y2))
+
+    for feat in rectangles + balconies + staircases:
+        label = (feat.kind or "feature").title()
+        x_entries.append((label, feat.x1))
+        x_entries.append((label, feat.x2))
+        y_entries.append((label, feat.y1))
+        y_entries.append((label, feat.y2))
+
+    for wall in extra_walls:
+        x_entries.append(("Extra wall", wall.start_x))
+        x_entries.append(("Extra wall", wall.end_x))
+        y_entries.append(("Extra wall", wall.start_y))
+        y_entries.append(("Extra wall", wall.end_y))
+
+    return x_entries, y_entries
+
+
+def build_debug_rows(
+    entries: list[tuple[str, float]]
+) -> list[tuple[str, float, float | None, bool]]:
+    """Group entries by rounded value, sort ascending, compute diffs.
+
+    Returns list of (sources_csv, value_m, diff_m_or_None, is_warning).
+    `is_warning = True` when 0 < diff < DEBUG_SNAP_TOLERANCE_M.
+    """
+    value_sources: dict[float, set[str]] = {}
+    for src, val in entries:
+        if val is None:
+            continue
+        v = round(float(val), 3)
+        value_sources.setdefault(v, set()).add(src)
+
+    sorted_vals = sorted(value_sources.keys())
+    rows: list[tuple[str, float, float | None, bool]] = []
+    for i, val in enumerate(sorted_vals):
+        sources = ", ".join(sorted(value_sources[val]))
+        if i == 0:
+            diff: float | None = None
+            is_warning = False
+        else:
+            diff = round(val - sorted_vals[i - 1], 3)
+            is_warning = 0 < diff < DEBUG_SNAP_TOLERANCE_M
+        rows.append((sources, val, diff, is_warning))
+    return rows
+
+
+def draw_debug_page(
+    x_entries: list[tuple[str, float]],
+    y_entries: list[tuple[str, float]],
+) -> str:
+    """Debug page (A1 + A2): two side-by-side tables of sorted unique X and
+    Y coordinates from every entity in the drawing. Rows where the gap to
+    the previous coordinate is below the snap tolerance get a light-yellow
+    background."""
+    c = PdfCanvas()
+
+    tol_mm = DEBUG_SNAP_TOLERANCE_M * 1000
+
+    c.fill_color(0, 0, 0)
+    c.text(42, PAGE_HEIGHT_PT - PAGE_MARGIN_PT - 4,
+           "Initial Structural Plan - Debug", size=14, font="F2")
+    c.text(42, PAGE_HEIGHT_PT - PAGE_MARGIN_PT - 20,
+           f"Snap tolerance: {tol_mm:.0f} mm -- highlighted rows have a diff smaller "
+           f"than this and probably should have merged.",
+           size=8)
+
+    x_rows = build_debug_rows(x_entries)
+    y_rows = build_debug_rows(y_entries)
+
+    page_left = PAGE_MARGIN_PT
+    page_right = PAGE_WIDTH_PT - PAGE_MARGIN_PT
+    table_top_y = PAGE_HEIGHT_PT - PAGE_MARGIN_PT - 40
+
+    half_w = (page_right - page_left) / 2 - 5
+    x_table_x = page_left
+    y_table_x = page_left + half_w + 10
+
+    src_w = half_w - 140
+    val_w = 70
+    diff_w = 70
+    table_w = src_w + val_w + diff_w
+    row_h = 11
+
+    def draw_one_table(left: float, top_y: float, title: str,
+                       axis_label: str,
+                       rows: list[tuple[str, float, float | None, bool]]) -> None:
+        c.fill_color(0, 0, 0.6)
+        c.text(left, top_y, title, size=10, font="F2")
+        y = top_y - 14
+
+        c.fill_color(0.9, 0.9, 0.95)
+        c.rect(left, y - 2, table_w, row_h + 2, "f")
+        c.fill_color(0, 0, 0)
+        c.text(left + 2, y, "Source", size=8, font="F2")
+        c.text(left + src_w + 2, y, f"{axis_label} (m)", size=8, font="F2")
+        c.text(left + src_w + val_w + 2, y, "Diff (mm)", size=8, font="F2")
+
+        c.line_width(0.5)
+        c.stroke_color(0.4, 0.4, 0.4)
+        c.line(left, y - 3, left + table_w, y - 3)
+        y -= row_h + 3
+
+        page_bottom = PAGE_MARGIN_PT + 18
+        for sources, val, diff, is_warning in rows:
+            if y < page_bottom:
+                c.fill_color(0.5, 0, 0)
+                c.text(left + 2, y, "... (more rows truncated)",
+                       size=7, font="F2")
+                break
+
+            if is_warning:
+                c.fill_color(1.0, 0.92, 0.55)
+                c.rect(left, y - 2, table_w, row_h, "f")
+                c.fill_color(0.7, 0.1, 0)
+            else:
+                c.fill_color(0, 0, 0)
+
+            max_chars = max(4, int(src_w / 4.2))
+            src_display = sources if len(sources) <= max_chars else sources[: max_chars - 1] + "..."
+
+            c.text(left + 2, y, src_display, size=7)
+            c.text(left + src_w + 2, y, f"{val:.3f}", size=7)
+            if diff is None:
+                c.text(left + src_w + val_w + 2, y, "-", size=7)
+            else:
+                c.text(left + src_w + val_w + 2, y, f"{diff * 1000:.0f}", size=7)
+            y -= row_h
+
+    draw_one_table(x_table_x, table_top_y,
+                   "X Coordinates (sorted ascending)", "X",
+                   x_rows)
+    draw_one_table(y_table_x, table_top_y,
+                   "Y Coordinates (sorted ascending)", "Y",
+                   y_rows)
 
     return c.content()
 
@@ -1230,6 +1442,18 @@ def main() -> None:
                 transform,
             )
         )
+    x_entries, y_entries = collect_debug_values(
+        columns=columns,
+        primary_beams=all_primary_beams,
+        secondary_beams=all_secondary_beams,
+        shear_walls=signed_shear_walls,
+        rectangles=rectangles,
+        balconies=balconies,
+        staircases=staircases,
+        extra_walls=extra_walls,
+    )
+    pdf.add_page(draw_debug_page(x_entries, y_entries))
+
     pdf.save(output_path)
 
     print(f"Input workbook : {input_path}")

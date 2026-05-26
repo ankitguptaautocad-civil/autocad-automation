@@ -19,13 +19,14 @@ DEFAULT_WALL_INPUT_PATH = None
 DEFAULT_GEOMETRY_INPUT_PATH = None
 DEFAULT_DXF_COLUMNS_INPUT_PATH = None
 DEFAULT_NODE_LEVEL_TOLERANCE_M = 0.60
+BEAM_FACE_MAX_DISTANCE_M = 0.250  # max distance (in metres) between two columns' beam-attaching faces for them to share a gridline. Nominal beam width is 230mm plus 20mm drafting/extraction-noise tolerance. Uses each column's Left/Right (for X) and Front/Back (for Y) labels to pick the relevant face — the FACE the beam connects to, not arbitrary rectangle overlap.
 NODE_SOURCE_FLOOR = "Typical floor roof"
 RAW_SECONDARY_SHEETS = ("Secondary beam coordinates_plin", "Secondary beam coordinates_nonp")
 FINAL_SECONDARY_SHEET = "Secondary beam coordinates"
 SHEAR_WALL_TEMPLATE_SHEET = "Shear wall landscape"
 COLUMN_LANDSCAPE_TEMPLATE_SHEET = "Column landscape"
 SECONDARY_ENDPOINT_MATCH_TOL_M = 0.25
-SECONDARY_SNAP_TOL_M = 0.15
+SECONDARY_SNAP_TOL_M = 0.10
 EXTRA_WALL_ORTHO_TOL_M = 0.20
 EXTRA_WALL_BEAM_EXCLUDE_TOL_M = 0.30
 EXTRA_WALL_MIN_EXPORT_LENGTH_M = 0.60
@@ -488,6 +489,100 @@ def level_values(values: list[float], tolerance_m: float) -> list[float]:
     return result
 
 
+def beam_face(col: ColumnRecord, axis: str) -> float:
+    """Return the coordinate of the column FACE where the beam attaches.
+
+    For axis='X' the relevant face is determined by Left/Right:
+      - "Left"  → Xmin (left face)
+      - "Right" → Xmax (right face)
+      - other   → column center (column without a clear side label)
+
+    For axis='Y' the relevant face is determined by Front/Back:
+      - "Front" → Ymin (front face)
+      - "Back"  → Ymax (back face)
+      - other   → column center
+    """
+    if axis == "X":
+        if col.left_right == "Left":
+            return col.xmin
+        if col.left_right == "Right":
+            return col.xmax
+        return (col.xmin + col.xmax) / 2
+    # axis == "Y"
+    if col.front_back == "Front":
+        return col.ymin
+    if col.front_back == "Back":
+        return col.ymax
+    return (col.ymin + col.ymax) / 2
+
+
+def level_nodes_by_face_distance(
+    columns: list[ColumnRecord],
+    node_values: list[float],
+    axis: str,
+    max_distance_m: float,
+) -> list[float]:
+    """Group columns whose beam-attaching faces are within `max_distance_m`
+    of each other on the given axis, then average their node values within
+    each group.
+
+    For axis='X' (X-leveling: columns share a vertical gridline), the face is
+    Xmin for "Left" columns and Xmax for "Right" columns. A beam connecting
+    two columns must land on each column's beam face — so if the faces are
+    farther apart than the beam can span, the columns cannot share a gridline.
+
+    For axis='Y', the face is Ymin for "Front" and Ymax for "Back".
+
+    Two columns at "Front Ymin=6.023" and "Front Ymin=6.366" have face distance
+    343mm — beyond a 230mm beam — so they are NOT on the same gridline, even
+    if their full rectangles overlap by 267mm. Rectangle overlap alone is
+    geometrically misleading; only the FACE distance determines beam
+    connectivity.
+
+    Grouping is transitive (union-find): if A's face is within tolerance of
+    B's face, and B's face is within tolerance of C's face, all three end up
+    in the same group even if A and C are farther apart directly.
+
+    Output preserves input order and length so the caller can zip it with the
+    original `columns` list.
+    """
+    n = len(columns)
+    if n == 0:
+        return list(node_values)
+
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    faces = [beam_face(col, axis) for col in columns]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if abs(faces[i] - faces[j]) <= max_distance_m:
+                union(i, j)
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    result = list(node_values)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        avg = round(sum(node_values[idx] for idx in members) / len(members), 3)
+        for idx in members:
+            result[idx] = avg
+    return result
+
+
 def compute_leveled_nodes(
     columns: list[ColumnRecord],
     x_beam_widths_by_column: dict[str, list[float]],
@@ -513,8 +608,8 @@ def compute_leveled_nodes(
         x_values.append(node_x)
         y_values.append(node_y)
 
-    leveled_x = level_values(x_values, tolerance_m)
-    leveled_y = level_values(y_values, tolerance_m)
+    leveled_x = level_nodes_by_face_distance(columns, x_values, "X", BEAM_FACE_MAX_DISTANCE_M)
+    leveled_y = level_nodes_by_face_distance(columns, y_values, "Y", BEAM_FACE_MAX_DISTANCE_M)
     leveled_nodes: dict[str, tuple[float, float]] = {}
     for column, node_x, node_y in zip(columns, leveled_x, leveled_y):
         leveled_nodes[column.type_name] = (round(node_x, 3), round(node_y, 3))
