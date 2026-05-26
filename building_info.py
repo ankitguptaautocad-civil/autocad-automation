@@ -14,7 +14,6 @@ Updates:
 Run node_coordinate_calculator.py first to create Filleddata_output.xlsx.
 """
 
-import argparse
 import csv
 from pathlib import Path
 from openpyxl import load_workbook
@@ -215,35 +214,5 @@ def main():
     print(f"\nDone!")
 
 
-def _parse_args() -> argparse.Namespace:
-    """Optional CLI overrides for the 3 path constants.
-
-    Used by the web pipeline (server/pipelines.py:run_building_info_pipeline)
-    so the same script works for both local-run (no args, hardcoded paths)
-    and web-run (each path supplied explicitly from the upload folder).
-    """
-    parser = argparse.ArgumentParser(
-        description="Fill building info into Datadata.xlsx + Global_assumptions.csv."
-    )
-    parser.add_argument(
-        "--building-info", dest="building_info", type=Path,
-        default=BUILDING_INFO_PATH,
-        help="Path to building info.xlsx (input only).",
-    )
-    parser.add_argument(
-        "--datadata", type=Path, default=FILLED_PATH,
-        help="Path to Datadata.xlsx (read existing AE-AF keys + write merged).",
-    )
-    parser.add_argument(
-        "--globals", dest="globals_csv", type=Path, default=GLOBAL_CSV_PATH,
-        help="Path to Global_assumptions.csv (patch matching keys).",
-    )
-    return parser.parse_args()
-
-
 if __name__ == "__main__":
-    args = _parse_args()
-    BUILDING_INFO_PATH = args.building_info
-    FILLED_PATH = args.datadata
-    GLOBAL_CSV_PATH = args.globals_csv
     main()

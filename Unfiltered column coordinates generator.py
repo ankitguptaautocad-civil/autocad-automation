@@ -7,7 +7,6 @@ from statistics import median
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment
-from openpyxl.worksheet.datavalidation import DataValidation
 
 
 DEFAULT_INPUT_PATH = None
@@ -2288,7 +2287,7 @@ def format_primary_beams_sheet(ws) -> None:
 
 
 def format_secondary_sheet(ws) -> None:
-    compact_headers = {"No.": 7, "Type": 8, "Beam location": 11, "Floor": 18, "Present": 10, "Beam width (mm)": 10, "Beam depth (mm)": 10, "Wall thickness (mm)": 10, "None beam (YES/NO)": 20}
+    compact_headers = {"No.": 7, "Type": 8, "Beam location": 11, "Floor": 18, "Present": 10, "Beam width (mm)": 10, "Beam depth (mm)": 10, "Wall thickness (mm)": 10}
     header_map = {cell.value: cell.column_letter for cell in ws[1]}
     for header, width in compact_headers.items():
         if header not in header_map:
@@ -2296,26 +2295,6 @@ def format_secondary_sheet(ws) -> None:
         ws.column_dimensions[header_map[header]].width = width
         for cell in ws[header_map[header]]:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-
-def _add_none_beam_dropdown(ws) -> None:
-    """Attach a YES/NO dropdown (DataValidation) to every data row in the
-    'None beam (YES/NO)' column of the given secondary-beam sheet. Looks up
-    the column letter dynamically so this works whether the column ends up
-    at M, N, or anywhere else."""
-    header_map = {cell.value: cell.column_letter for cell in ws[1]}
-    col_letter = header_map.get("None beam (YES/NO)")
-    if not col_letter:
-        return
-    if ws.max_row < 2:
-        return
-    dv = DataValidation(type="list", formula1='"YES,NO"', allow_blank=True)
-    dv.error = "Pick YES or NO"
-    dv.errorTitle = "Invalid input"
-    dv.prompt = "Mark this beam as 'None' if it should be omitted from the floor."
-    dv.promptTitle = "None beam"
-    ws.add_data_validation(dv)
-    dv.add(f"{col_letter}2:{col_letter}{ws.max_row}")
 
 
 def secondary_row_values(
@@ -2624,23 +2603,21 @@ def write_output(
                 "Beam width (mm)",
                 "Beam depth (mm)",
                 "Wall thickness (mm)",
-                "None beam (YES/NO)",
             ]
         )
         for beam in plinth_secondaries:
-            row = list(secondary_row_values(
-                beam,
-                "Plinth",
-                walls_by_floor,
-                wall_alignment_tolerance_m,
-                edge_wall_coverage_threshold_pct,
-                interior_wall_coverage_threshold_pct,
-            ))
-            row.append("")  # None beam — blank default, user picks from dropdown
-            ws_plinth.append(row)
+            ws_plinth.append(
+                secondary_row_values(
+                    beam,
+                    "Plinth",
+                    walls_by_floor,
+                    wall_alignment_tolerance_m,
+                    edge_wall_coverage_threshold_pct,
+                    interior_wall_coverage_threshold_pct,
+                )
+            )
         autosize(ws_plinth)
         format_secondary_sheet(ws_plinth)
-        _add_none_beam_dropdown(ws_plinth)
 
     if nonplinth_secondaries:
         ws_nonplinth = wb.create_sheet(RAW_NONPLINTH_SHEET)
@@ -2658,24 +2635,22 @@ def write_output(
                 "Beam width (mm)",
                 "Beam depth (mm)",
                 "Wall thickness (mm)",
-                "None beam (YES/NO)",
             ]
         )
         for beam in nonplinth_secondaries:
             for floor in NONPLINTH_FLOORS:
-                row = list(secondary_row_values(
-                    beam,
-                    floor,
-                    walls_by_floor,
-                    wall_alignment_tolerance_m,
-                    edge_wall_coverage_threshold_pct,
-                    interior_wall_coverage_threshold_pct,
-                ))
-                row.append("")  # None beam — blank default
-                ws_nonplinth.append(row)
+                ws_nonplinth.append(
+                    secondary_row_values(
+                        beam,
+                        floor,
+                        walls_by_floor,
+                        wall_alignment_tolerance_m,
+                        edge_wall_coverage_threshold_pct,
+                        interior_wall_coverage_threshold_pct,
+                    )
+                )
         autosize(ws_nonplinth)
         format_secondary_sheet(ws_nonplinth)
-        _add_none_beam_dropdown(ws_nonplinth)
 
     if secondary_audit_rows:
         ws_audit = wb.create_sheet("Secondary beam audit")

@@ -28,7 +28,32 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.worksheet.datavalidation import DataValidation
+
+
+# ── Output-folder picker (shown once per run, before AutoCAD work starts) ──
+def _ask_output_folder(default_dir: Path) -> Path:
+    """Show a native Windows folder picker. Returns the chosen folder, or
+    default_dir if the user cancels or the picker fails for any reason."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        chosen = filedialog.askdirectory(
+            initialdir=str(default_dir),
+            title="Select output folder for floor_coordinates_*.xlsx files",
+            mustexist=True,
+        )
+        root.destroy()
+        if chosen:
+            return Path(chosen)
+        print(f"[!] No folder picked. Using default: {default_dir}")
+        return default_dir
+    except Exception as e:
+        print(f"[!] Folder picker failed ({e}). Using default: {default_dir}")
+        return default_dir
+
 
 try:
     from pyautocad import Autocad, APoint
@@ -1874,9 +1899,8 @@ def _build_secondary_beam_sheet_generic(ws, data, scale_m_per_unit, origin, pref
         "Coordinate X2 (m)", "Coordinate Y2 (m)",
         "Beam location", "Floor", "Present",
         "Beam width (mm)", "Beam depth (mm)", "Wall thickness (mm)",
-        "None beam (YES/NO)",
     ]
-    widths = [6, 8, 18, 18, 18, 18, 16, 16, 10, 18, 18, 18, 20]
+    widths = [6, 8, 18, 18, 18, 18, 16, 16, 10, 18, 18, 18]
     _write_header(ws, headers, widths)
 
     ox, oy = origin
@@ -1918,24 +1942,12 @@ def _build_secondary_beam_sheet_generic(ws, data, scale_m_per_unit, origin, pref
                 fd["beam_width"],
                 fd["beam_depth"],
                 fd["wall_thickness"],
-                "",  # None beam (YES/NO) — left blank; user picks from dropdown
             ])
             shade_idx = min(floor_idx, len(beam_colors) - 1)
             fill = PatternFill("solid", fgColor=beam_colors[shade_idx])
             for col_idx in range(1, len(headers) + 1):
                 ws.cell(row=row, column=col_idx).fill = fill
             row += 1
-
-    # Attach a YES/NO dropdown to the "None beam (YES/NO)" column for every
-    # data row written above. Column M is the 13th (= "None beam").
-    if row > 2:
-        dv = DataValidation(type="list", formula1='"YES,NO"', allow_blank=True)
-        dv.error = "Pick YES or NO"
-        dv.errorTitle = "Invalid input"
-        dv.prompt = "Mark this beam as 'None' if it should be omitted from the floor."
-        dv.promptTitle = "None beam"
-        ws.add_data_validation(dv)
-        dv.add(f"M2:M{row - 1}")
 
 
 def build_secondary_beam_plinth_sheet(ws, data, scale_m_per_unit, origin):
@@ -2189,6 +2201,11 @@ def show_menu(doc, remaining_keys):
 
 
 def main():
+    # Step 0: ask the operator where to save the output Excel files.
+    default_out_dir = Path(r"D:\JARVIS back up 16092025\JARVIS backup\STD ANL model")
+    chosen_out_dir = _ask_output_folder(default_out_dir)
+    print(f"Output folder: {chosen_out_dir}")
+
     print("Connecting to AutoCAD...")
     print("Make sure AutoCAD window is active and no dialogs are open.")
 
@@ -2295,7 +2312,8 @@ def main():
     # File 2: Secondary beam plinth only
     # File 3: Secondary beam non-plinth + all other sheets (Rectangle, Balcony, etc.)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(r"D:\JARVIS back up 16092025\JARVIS backup\STD ANL model")
+    out_dir = chosen_out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Split results into 3 groups
     column_results = [r for r in all_results if r["type"] == "columns"]
