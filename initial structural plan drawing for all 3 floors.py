@@ -594,6 +594,51 @@ def extra_wall_rect(wall: ExtraWall) -> tuple[float, float, float, float]:
     return x - half, y1, wall.thickness_m, y2 - y1
 
 
+EXTRA_WALL_MIN_LENGTH_M = 1.0
+
+
+def load_extra_walls_unfiltered(ws) -> list[ExtraWall]:
+    """Read the 'Extra wall coordinates' sheet, keeping only walls >= 1.0m long."""
+    headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    header_map = {normalize_header(v): idx for idx, v in enumerate(headers)}
+    required = ("snappedx1m", "snappedy1m", "snappedx2m", "snappedy2m", "wallthicknessmm", "floor", "present")
+    if not all(key in header_map for key in required):
+        return []
+
+    walls: list[ExtraWall] = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if all(value in (None, "") for value in row):
+            continue
+        if safe_text(row[header_map["present"]]).upper() != "YES":
+            continue
+        x1 = safe_float(row[header_map["snappedx1m"]])
+        y1 = safe_float(row[header_map["snappedy1m"]])
+        x2 = safe_float(row[header_map["snappedx2m"]])
+        y2 = safe_float(row[header_map["snappedy2m"]])
+        if x1 is None or y1 is None or x2 is None or y2 is None:
+            continue
+        thickness_mm = safe_float(row[header_map["wallthicknessmm"]])
+        if thickness_mm is None or thickness_mm <= 0:
+            continue
+        length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        if length < EXTRA_WALL_MIN_LENGTH_M:
+            continue
+        floor = safe_text(row[header_map["floor"]])
+        label = safe_text(row[header_map.get("type", header_map.get("no", 0))])
+        if abs(y1 - y2) <= EPS and abs(x1 - x2) > EPS:
+            axis = "X"
+        elif abs(x1 - x2) <= EPS and abs(y1 - y2) > EPS:
+            axis = "Y"
+        else:
+            continue
+        walls.append(ExtraWall(
+            label=label, floor=floor, axis=axis,
+            start_x=x1, start_y=y1, end_x=x2, end_y=y2,
+            thickness_m=thickness_mm / 1000.0,
+        ))
+    return walls
+
+
 def load_extra_walls(ws) -> list[ExtraWall]:
     """Read the 'Extra walls (filtered)' sheet from the other-coordinates workbook.
 
@@ -1097,16 +1142,50 @@ def draw_page(
         c.fill_color(0.05, 0.18, 0.55)
         c.text(text_x, text_y, lbl, size=font_size, font="F2")
 
-    # Balcony outlines.
-    c.stroke_color(0.16, 0.50, 0.20)
-    c.line_width(1.0)
-    c.dash(4.0, 3.0)
+    # Balcony outlines + 230mm perimeter beams (matching DXF style).
+    BALCONY_BEAM_W_M = 0.230
     for feature in balconies:
         fx1, fx2 = sorted((feature.x1, feature.x2))
         fy1, fy2 = sorted((feature.y1, feature.y2))
+
         px, py, pw, ph = transform.rect(fx1, fy1, fx2 - fx1, fy2 - fy1)
-        c.rect(px, py, pw, ph, "S")
+
+        # Draw 230mm beams along 3 edges (bottom + left + right).
+        # The outer edge (top for back balcony, bottom for front) gets a thin
+        # connecting line instead of a thick beam.
+        half = BALCONY_BEAM_W_M / 2.0
+
+        # Determine which Y edge is the "outer" one (farthest from building center).
+        building_cy = (min(col.node_y for col in columns) + max(col.node_y for col in columns)) / 2
+        inner_y = fy1 if abs(fy1 - building_cy) < abs(fy2 - building_cy) else fy2
+        outer_y = fy2 if inner_y == fy1 else fy1
+
+        # Inner edge beam (where balcony meets building) — 230mm thick.
+        bx, by, bw, bh = transform.rect(fx1, inner_y - half, fx2 - fx1, BALCONY_BEAM_W_M)
+        c.fill_color(0.85, 0.15, 0.15)
+        c.stroke_color(0, 0, 0)
+        c.line_width(0.5)
+        c.dash()
+        c.rect(bx, by, bw, bh, "B")
+
+        # Left edge beam — 230mm thick.
+        bx, by, bw, bh = transform.rect(fx1 - half, fy1, BALCONY_BEAM_W_M, fy2 - fy1)
+        c.rect(bx, by, bw, bh, "B")
+
+        # Right edge beam — 230mm thick.
+        bx, by, bw, bh = transform.rect(fx2 - half, fy1, BALCONY_BEAM_W_M, fy2 - fy1)
+        c.rect(bx, by, bw, bh, "B")
+
+        # Outer edge — thin connecting line (not a beam).
+        lx1, ly1, _, _ = transform.rect(fx1, outer_y, 0, 0)
+        lx2, ly2, _, _ = transform.rect(fx2, outer_y, 0, 0)
+        c.stroke_color(0, 0, 0)
+        c.line_width(1.0)
+        c.line(lx1, ly1, lx2, ly2)
+
+        # Label.
         c.fill_color(0.16, 0.50, 0.20)
+        c.dash()
         c.text(px + 3, py + max(3, ph * 0.5), feature.label, size=8)
 
     # Staircase outlines.
@@ -1397,7 +1476,9 @@ def main() -> None:
             balconies = load_feature_rects(other_wb["Balcony coordinates"], "nonplinth", "balcony")
         if "Staircase details" in other_wb.sheetnames:
             staircases = load_feature_rects(other_wb["Staircase details"], "nonplinth", "staircase")
-        if "Extra walls (filtered)" in other_wb.sheetnames:
+        if "Extra wall coordinates" in other_wb.sheetnames:
+            extra_walls = load_extra_walls_unfiltered(other_wb["Extra wall coordinates"])
+        elif "Extra walls (filtered)" in other_wb.sheetnames:
             extra_walls = load_extra_walls(other_wb["Extra walls (filtered)"])
         other_wb.close()
 
@@ -1424,7 +1505,7 @@ def main() -> None:
                 floor_rectangles.append(feature)
             elif label == "mumty" and floor_key == "Terrace":
                 floor_rectangles.append(feature)
-        floor_balconies = balconies if floor_key != "Plinth" else []
+        floor_balconies = balconies
         floor_staircases = staircases if floor_key != "Plinth" else []
         pdf.add_page(
             draw_page(
