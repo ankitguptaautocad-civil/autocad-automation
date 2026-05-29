@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -86,6 +86,186 @@ class ExtraWall:
     end_x: float
     end_y: float
     thickness_m: float
+
+
+def normalize_misaligned_primary_beams(primary_beams: list, tolerance_m: float = 0.10) -> list:
+    """Engineering safety net: when a primary beam was picked between two
+    columns whose grid lines don't actually align (e.g. C5 at X=3.958 and
+    C8 at X=4.288 — 330 mm apart), our pipeline records the beam as if it
+    were a single straight member between them. In real construction this
+    isn't a single beam — it's a vertical (or horizontal) beam at ONE grid
+    line; the other column is structurally offset and supported by its own
+    perpendicular beam.
+
+    This function snaps the START coordinate of any such beam onto the END
+    column's grid line. Result: the beam is drawn as a true axial member
+    at the END column's coordinate, and the offset column is left alone
+    (still has its own connecting beams from the data).
+
+    Rule applied per beam:
+      - direction == "Y" and |start_x - end_x| > tolerance → snap start_x = end_x
+      - direction == "X" and |start_y - end_y| > tolerance → snap start_y = end_y
+    """
+    if not primary_beams:
+        return primary_beams
+    fixed = []
+    for beam in primary_beams:
+        if beam.direction == "Y" and abs(beam.start_x - beam.end_x) > tolerance_m:
+            fixed.append(replace(beam, start_x=beam.end_x))
+        elif beam.direction == "X" and abs(beam.start_y - beam.end_y) > tolerance_m:
+            fixed.append(replace(beam, start_y=beam.end_y))
+        else:
+            fixed.append(beam)
+    return fixed
+
+
+def propagate_secondary_walls_to_primary_beams_pdf(
+    primary_beams: list,
+    secondary_beams: list,
+    snap_tol_m: float = 0.10,
+) -> list:
+    """At PDF time, propagate wall_thickness from any secondary beam (wall>0)
+    whose endpoint touches a primary beam — so the primary beam's wall
+    reflects the load passed through the secondary. Mirrors the same fix
+    in the Appended Node Generator; used when the upstream Excel data
+    still has the pre-fix wall_thickness values."""
+    secs_by_floor: dict[str, list[tuple[float, float, float, float, float]]] = {}
+    for sec in secondary_beams:
+        if sec.wall_thickness_m <= 0:
+            continue
+        secs_by_floor.setdefault(sec.floor, []).append(
+            (sec.start_x, sec.start_y, sec.end_x, sec.end_y, sec.wall_thickness_m)
+        )
+
+    if not secs_by_floor:
+        return list(primary_beams)
+
+    updated = []
+    for beam in primary_beams:
+        secs = secs_by_floor.get(beam.floor, [])
+        if not secs:
+            updated.append(beam)
+            continue
+
+        sx, sy, ex, ey = beam.start_x, beam.start_y, beam.end_x, beam.end_y
+        if abs(sy - ey) <= 1e-6:
+            axis = "X"
+            fixed = (sy + ey) / 2.0
+            beam_lo, beam_hi = sorted((sx, ex))
+        elif abs(sx - ex) <= 1e-6:
+            axis = "Y"
+            fixed = (sx + ex) / 2.0
+            beam_lo, beam_hi = sorted((sy, ey))
+        else:
+            updated.append(beam)
+            continue
+
+        max_wall = beam.wall_thickness_m
+        for (sx1, sy1, sx2, sy2, sec_wall) in secs:
+            if sec_wall <= max_wall:
+                continue
+            for pt_x, pt_y in ((sx1, sy1), (sx2, sy2)):
+                if axis == "X":
+                    if abs(pt_y - fixed) <= snap_tol_m and beam_lo - snap_tol_m <= pt_x <= beam_hi + snap_tol_m:
+                        max_wall = sec_wall
+                        break
+                else:
+                    if abs(pt_x - fixed) <= snap_tol_m and beam_lo - snap_tol_m <= pt_y <= beam_hi + snap_tol_m:
+                        max_wall = sec_wall
+                        break
+
+        if max_wall > beam.wall_thickness_m:
+            updated.append(replace(beam, wall_thickness_m=max_wall))
+        else:
+            updated.append(beam)
+    return updated
+
+
+def extend_secondary_beams_into_balconies(
+    secondary_beams: list,
+    balconies: list,
+    columns: list,
+    cantilever_width_m: float = 0.230,
+    cantilever_depth_m: float = 0.150,
+    cantilever_wall_m: float = 0.040,
+    snap_tol_m: float = 0.30,
+) -> list:
+    """Add cantilever beams (CB — Cantilever Beam, default 230 × 150 with
+    40 mm wall) wherever the building meets a balcony's inner edge. Two
+    trigger types:
+
+      (1) Any secondary beam endpoint near a balcony's inner edge → cantilever
+          from that endpoint to the balcony's outer edge.
+      (2) Any mid column (NOT corner) whose node_y matches a balcony's inner
+          edge AND whose node_x lies strictly inside the balcony's X span
+          → cantilever from that column to the balcony's outer edge.
+
+    Corner columns are skipped because the balcony's left/right perimeter
+    beam already occupies that position. Original secondary beams are
+    unchanged; new cantilever beams are appended. Duplicates skipped."""
+    if not balconies or not columns:
+        return list(secondary_beams)
+
+    building_cy = (
+        min(c.node_y for c in columns) + max(c.node_y for c in columns)
+    ) / 2.0
+
+    balcony_edges: list[tuple[float, float, float, float]] = []
+    for b in balconies:
+        bx1, bx2 = sorted((b.x1, b.x2))
+        by1, by2 = sorted((b.y1, b.y2))
+        if abs(by1 - building_cy) < abs(by2 - building_cy):
+            inner_y, outer_y = by1, by2
+        else:
+            inner_y, outer_y = by2, by1
+        balcony_edges.append((bx1, bx2, inner_y, outer_y))
+
+    result = list(secondary_beams)
+    seen: set[tuple] = set()
+
+    def add_cantilever(px: float, start_y: float, outer_y: float, floor: str) -> None:
+        key = (round(px, 3), round(outer_y, 3), floor)
+        if key in seen:
+            return
+        seen.add(key)
+        result.append(BeamStrip(
+            beam_no="CB",
+            floor=floor,
+            direction="Y",
+            beam_class="Cantilever",
+            beam_width_m=cantilever_width_m,
+            beam_depth_m=cantilever_depth_m,
+            wall_thickness_m=cantilever_wall_m,
+            start_x=px,
+            start_y=start_y,
+            end_x=px,
+            end_y=outer_y,
+            source_kind="secondary",
+        ))
+
+    # (1) Secondary beam endpoints near a balcony edge
+    for beam in secondary_beams:
+        for (px, py) in ((beam.start_x, beam.start_y), (beam.end_x, beam.end_y)):
+            for (bx1, bx2, inner_y, outer_y) in balcony_edges:
+                if abs(py - inner_y) <= snap_tol_m and bx1 - snap_tol_m <= px <= bx2 + snap_tol_m:
+                    add_cantilever(px, py, outer_y, beam.floor)
+                    break
+
+    # (2) MID columns (not corner) at the balcony's inner edge — emit a
+    # cantilever per floor. Corner columns are skipped because the balcony's
+    # left/right perimeter beam already sits at that position; adding a CB
+    # there would overlap with the perimeter beam visually.
+    for col in columns:
+        for (bx1, bx2, inner_y, outer_y) in balcony_edges:
+            if abs(col.node_y - inner_y) <= snap_tol_m and bx1 - snap_tol_m <= col.node_x <= bx2 + snap_tol_m:
+                is_corner = abs(col.node_x - bx1) <= snap_tol_m or abs(col.node_x - bx2) <= snap_tol_m
+                if is_corner:
+                    break
+                for (floor_key, _title) in FLOOR_PAGES:
+                    add_cantilever(col.node_x, inner_y, outer_y, floor_key)
+                break
+
+    return result
 
 
 def normalize_header(value: object) -> str:
@@ -844,6 +1024,20 @@ class PdfCanvas:
             f"BT /{font} {size:.3f} Tf {x:.3f} {y:.3f} Td ({pdf_escape(text)}) Tj ET"
         )
 
+    def text_rotated(self, x: float, y: float, text: str, size: float = 10.0, font: str = "F1", angle_deg: float = 90.0) -> None:
+        """Draw text rotated by angle_deg counter-clockwise. Uses PDF text matrix.
+        Default 90° CCW: text reads bottom-to-top (standard for vertical beam
+        labels in structural drawings — engineer tilts head to the left)."""
+        import math
+        rad = math.radians(angle_deg)
+        a = math.cos(rad)
+        b = math.sin(rad)
+        c = -math.sin(rad)
+        d = math.cos(rad)
+        self.commands.append(
+            f"BT /{font} {size:.3f} Tf {a:.4f} {b:.4f} {c:.4f} {d:.4f} {x:.3f} {y:.3f} Tm ({pdf_escape(text)}) Tj ET"
+        )
+
     def content(self) -> str:
         return "\n".join(self.commands) + "\n"
 
@@ -1122,25 +1316,52 @@ def draw_page(
     # Primary and secondary beam labels with anti-overlap placement.
     placed_label_boxes: list[tuple[float, float, float, float]] = []
 
+    def _fit_font(label: str, base_font: float, available_length_pt: float, min_font: float = 6.0) -> float:
+        """Auto-shrink the font so the label fits inside the beam length."""
+        required_w = len(label) * base_font * 0.58
+        usable = max(available_length_pt * 0.92, 1.0)
+        if required_w <= usable:
+            return base_font
+        scaled = base_font * usable / required_w
+        return max(scaled, min_font)
+
     for beam in primary_beams:
         bx, by, bw, bh = beam_rect(beam, beam.beam_width_m)
         px, py, pw, ph = transform.rect(bx, by, bw, bh)
         lbl = f"{beam.beam_no} ({int(round(beam.beam_width_m * 1000))}; {int(round(beam.beam_depth_m * 1000))}; {int(round(beam.wall_thickness_m * 1000))})"
-        font_size = 13.0
-        text_x, text_y, box = _try_place_label(placed_label_boxes, px, py, pw, ph, lbl, font_size)
-        placed_label_boxes.append(box)
         c.fill_color(0, 0, 0)
-        c.text(text_x, text_y, lbl, size=font_size, font="F2")
+        if pw >= ph:
+            font_size = _fit_font(lbl, 13.0, pw)
+            text_x, text_y, box = _try_place_label(placed_label_boxes, px, py, pw, ph, lbl, font_size)
+            placed_label_boxes.append(box)
+            c.text(text_x, text_y, lbl, size=font_size, font="F2")
+        else:
+            font_size = _fit_font(lbl, 13.0, ph)
+            text_w = len(lbl) * font_size * 0.58
+            text_h = font_size
+            text_x = px + pw / 2 + text_h / 2
+            text_y = py + ph / 2 - text_w / 2
+            placed_label_boxes.append((text_x - text_h, text_y, text_x, text_y + text_w))
+            c.text_rotated(text_x, text_y, lbl, size=font_size, font="F2", angle_deg=90.0)
 
     for beam in secondary_beams:
         bx, by, bw, bh = beam_rect(beam, beam.beam_width_m)
         px, py, pw, ph = transform.rect(bx, by, bw, bh)
         lbl = f"{beam.beam_no} ({int(round(beam.beam_width_m * 1000))}; {int(round(beam.beam_depth_m * 1000))}; {int(round(beam.wall_thickness_m * 1000))})"
-        font_size = 13.0
-        text_x, text_y, box = _try_place_label(placed_label_boxes, px, py, pw, ph, lbl, font_size)
-        placed_label_boxes.append(box)
         c.fill_color(0.05, 0.18, 0.55)
-        c.text(text_x, text_y, lbl, size=font_size, font="F2")
+        if pw >= ph:
+            font_size = _fit_font(lbl, 13.0, pw)
+            text_x, text_y, box = _try_place_label(placed_label_boxes, px, py, pw, ph, lbl, font_size)
+            placed_label_boxes.append(box)
+            c.text(text_x, text_y, lbl, size=font_size, font="F2")
+        else:
+            font_size = _fit_font(lbl, 13.0, ph)
+            text_w = len(lbl) * font_size * 0.58
+            text_h = font_size
+            text_x = px + pw / 2 + text_h / 2
+            text_y = py + ph / 2 - text_w / 2
+            placed_label_boxes.append((text_x - text_h, text_y, text_x, text_y + text_w))
+            c.text_rotated(text_x, text_y, lbl, size=font_size, font="F2", angle_deg=90.0)
 
     # Balcony outlines + 230mm perimeter beams (matching DXF style).
     BALCONY_BEAM_W_M = 0.230
@@ -1160,28 +1381,37 @@ def draw_page(
         inner_y = fy1 if abs(fy1 - building_cy) < abs(fy2 - building_cy) else fy2
         outer_y = fy2 if inner_y == fy1 else fy1
 
-        # Inner edge beam (where balcony meets building) — 230mm thick.
-        bx, by, bw, bh = transform.rect(fx1, inner_y - half, fx2 - fx1, BALCONY_BEAM_W_M)
+        # NOTE: inner-edge beam is intentionally NOT drawn here. The primary
+        # beam at the balcony's inner edge (between the building columns) is
+        # already in the primary-beam data and gets its wall drawn (or not)
+        # based on its actual wall_thickness per floor. Drawing a hardcoded
+        # 230 mm red rectangle here was duplicating the primary beam AND
+        # forcing a wall on floors where there is none (e.g. Terrace top).
+
+        # Compute the OUTER FACE Y of the outer beam — i.e., the side of the
+        # outer beam that faces AWAY from the building. The left/right beams
+        # need to reach this Y so the corners look like a continuous L (no gap).
+        outer_face_sign = 1 if outer_y > inner_y else -1
+        y_outer_face = outer_y + outer_face_sign * half
+        side_y_min = min(y_outer_face, inner_y)
+        side_y_height = abs(y_outer_face - inner_y)
+
+        # Left edge beam — extends from outer beam's outer face to inner edge.
         c.fill_color(0.85, 0.15, 0.15)
         c.stroke_color(0, 0, 0)
         c.line_width(0.5)
         c.dash()
+        bx, by, bw, bh = transform.rect(fx1 - half, side_y_min, BALCONY_BEAM_W_M, side_y_height)
         c.rect(bx, by, bw, bh, "B")
 
-        # Left edge beam — 230mm thick.
-        bx, by, bw, bh = transform.rect(fx1 - half, fy1, BALCONY_BEAM_W_M, fy2 - fy1)
+        # Right edge beam — same Y range, mirrored at fx2.
+        bx, by, bw, bh = transform.rect(fx2 - half, side_y_min, BALCONY_BEAM_W_M, side_y_height)
         c.rect(bx, by, bw, bh, "B")
 
-        # Right edge beam — 230mm thick.
-        bx, by, bw, bh = transform.rect(fx2 - half, fy1, BALCONY_BEAM_W_M, fy2 - fy1)
+        # Outer edge beam — extends from left beam's outer face to right
+        # beam's outer face so the corners are fully filled.
+        bx, by, bw, bh = transform.rect(fx1 - half, outer_y - half, (fx2 - fx1) + 2 * half, BALCONY_BEAM_W_M)
         c.rect(bx, by, bw, bh, "B")
-
-        # Outer edge — thin connecting line (not a beam).
-        lx1, ly1, _, _ = transform.rect(fx1, outer_y, 0, 0)
-        lx2, ly2, _, _ = transform.rect(fx2, outer_y, 0, 0)
-        c.stroke_color(0, 0, 0)
-        c.line_width(1.0)
-        c.line(lx1, ly1, lx2, ly2)
 
         # Label.
         c.fill_color(0.16, 0.50, 0.20)
@@ -1452,6 +1682,15 @@ def main() -> None:
     columns = load_columns(wb["Columns"])
     all_primary_beams = load_beams(wb["Primary Beams"])
     all_secondary_beams = load_secondary_beams(wb[FINAL_SECONDARY_SHEET]) if FINAL_SECONDARY_SHEET in wb.sheetnames else []
+    # Engineering safety: snap any "diagonal" primary beam (picked between
+    # columns at misaligned grid lines) to a true axial line at the END
+    # column's coordinate — beam stays present, just no false connection
+    # to the offset column.
+    all_primary_beams = normalize_misaligned_primary_beams(all_primary_beams)
+    # Propagate wall_thickness from touching secondary beams (e.g. lift walls)
+    # to primary beams at PDF time — handles legacy Excels generated before
+    # the same fix landed in the Appended Node Generator.
+    all_primary_beams = propagate_secondary_walls_to_primary_beams_pdf(all_primary_beams, all_secondary_beams)
     signed_shear_walls, signed_wall_source = load_signed_shear_walls(wb)
     grid_x, grid_y = load_visual_grid_lines(wb)
     if signed_shear_walls:
@@ -1481,6 +1720,13 @@ def main() -> None:
         elif "Extra walls (filtered)" in other_wb.sheetnames:
             extra_walls = load_extra_walls(other_wb["Extra walls (filtered)"])
         other_wb.close()
+
+    # Extend any secondary beam that ends at a balcony's inner edge so it
+    # spans into the balcony to the outer edge (supports cantilever slab).
+    all_secondary_beams = extend_secondary_beams_into_balconies(
+        all_secondary_beams, balconies, columns, snap_tol_m=0.30
+    )
+    floor_secondary_beams = {floor: [beam for beam in all_secondary_beams if beam.floor == floor] for floor, _ in FLOOR_PAGES}
 
     floor_extra_walls = {floor: [w for w in extra_walls if w.floor == floor] for floor, _ in FLOOR_PAGES}
 

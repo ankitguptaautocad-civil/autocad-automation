@@ -817,6 +817,86 @@ def write_column_landscape_sheet(wb, ws_cols) -> None:
         validation.add(f"{col_letter}2:{col_letter}5000")
 
 
+def propagate_secondary_walls_to_primary_beams(
+    ws_beams,
+    header_map: dict[str, int],
+    final_secondary_rows: list[dict[str, object]],
+    snap_tol_m: float = 0.10,
+) -> int:
+    """For each primary beam, if a secondary beam with wall>0 has an endpoint
+    touching the primary's line segment, propagate the secondary's wall
+    thickness to the primary (take max). This reflects walls transferring
+    load through secondaries to the primary — e.g. the lift south wall
+    sitting on B5 via SO4/SO5. Returns the number of rows updated."""
+    floor_idx = header_map["floor"]
+    wall_idx = header_map["wallthicknessmm"]
+    sx_idx = header_map["startanchorxm"]
+    sy_idx = header_map["startanchorym"]
+    ex_idx = header_map["endanchorxm"]
+    ey_idx = header_map["endanchorym"]
+
+    secs_by_floor: dict[str, list[tuple[float, float, float, float, float]]] = {}
+    for sec in final_secondary_rows:
+        try:
+            floor = str(sec.get("floor") or "").strip()
+            wall = float(sec.get("wall_thickness_mm") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not floor or wall <= 0:
+            continue
+        try:
+            sx1 = float(sec["x1"]); sy1 = float(sec["y1"])
+            sx2 = float(sec["x2"]); sy2 = float(sec["y2"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        secs_by_floor.setdefault(floor, []).append((sx1, sy1, sx2, sy2, wall))
+
+    if not secs_by_floor:
+        return 0
+
+    updated = 0
+    for row_idx, row in enumerate(ws_beams.iter_rows(min_row=2), start=2):
+        cells = [c.value for c in row]
+        try:
+            floor = str(cells[floor_idx] or "").strip()
+            if not floor or floor not in secs_by_floor:
+                continue
+            current_wall = float(cells[wall_idx] or 0)
+            sx = float(cells[sx_idx]); sy = float(cells[sy_idx])
+            ex = float(cells[ex_idx]); ey = float(cells[ey_idx])
+        except (TypeError, ValueError):
+            continue
+
+        if abs(sy - ey) <= 1e-6:
+            axis = "X"; fixed = (sy + ey) / 2.0
+            beam_lo, beam_hi = sorted((sx, ex))
+        elif abs(sx - ex) <= 1e-6:
+            axis = "Y"; fixed = (sx + ex) / 2.0
+            beam_lo, beam_hi = sorted((sy, ey))
+        else:
+            continue
+
+        max_sec_wall = current_wall
+        for (sx1, sy1, sx2, sy2, sec_wall) in secs_by_floor[floor]:
+            if sec_wall <= max_sec_wall:
+                continue
+            for pt_x, pt_y in ((sx1, sy1), (sx2, sy2)):
+                if axis == "X":
+                    if abs(pt_y - fixed) <= snap_tol_m and beam_lo - snap_tol_m <= pt_x <= beam_hi + snap_tol_m:
+                        max_sec_wall = sec_wall
+                        break
+                else:
+                    if abs(pt_x - fixed) <= snap_tol_m and beam_lo - snap_tol_m <= pt_y <= beam_hi + snap_tol_m:
+                        max_sec_wall = sec_wall
+                        break
+
+        if max_sec_wall > current_wall:
+            ws_beams.cell(row=row_idx, column=wall_idx + 1).value = max_sec_wall
+            updated += 1
+
+    return updated
+
+
 def rewrite_primary_beams(ws_beams, leveled_nodes: dict[str, tuple[float, float]], header_map: dict[str, int]) -> None:
     header_updates = {
         "startanchorxm": "Start Node X (m)",
@@ -1397,6 +1477,40 @@ def build_generated_secondary_raw_rows(
     plinth_rectangles = [rect for rect in rectangles if str(rect.location).strip().lower() == "lift"]
     lift_rectangles = [rect for rect in rectangles if str(rect.location).strip().lower() == "lift"]
 
+    # Client rule: no secondary beams in the staircase portion. Read staircase
+    # rectangles from the "Staircase details" sheet (cols 1..4 = x1, y1, x2, y2)
+    # and filter out any generated beam whose footprint overlaps one of them.
+    staircase_rectangles: list[tuple[float, float, float, float]] = []
+    try:
+        _wb_stair = load_workbook(other_geometry_path, data_only=True)
+        if "Staircase details" in _wb_stair.sheetnames:
+            _ws_stair = _wb_stair["Staircase details"]
+            for _r in range(2, _ws_stair.max_row + 1):
+                _row = [_ws_stair.cell(_r, _c).value for _c in range(1, _ws_stair.max_column + 1)]
+                if len(_row) >= 5 and all(isinstance(_row[_i], (int, float)) for _i in range(1, 5)):
+                    _x1, _y1, _x2, _y2 = float(_row[1]), float(_row[2]), float(_row[3]), float(_row[4])
+                    _rx1, _rx2 = sorted((_x1, _x2))
+                    _ry1, _ry2 = sorted((_y1, _y2))
+                    staircase_rectangles.append((_rx1, _rx2, _ry1, _ry2))
+        _wb_stair.close()
+    except Exception:
+        pass
+
+    def beam_is_inside_staircase(beam) -> bool:
+        fixed, start, end = unfiltered.axis_major_values(beam.axis, beam.x1, beam.y1, beam.x2, beam.y2)
+        for (rx1, rx2, ry1, ry2) in staircase_rectangles:
+            if beam.axis == "X":
+                if not (ry1 - SECONDARY_SNAP_TOL_M <= fixed <= ry2 + SECONDARY_SNAP_TOL_M):
+                    continue
+                overlap = unfiltered.overlap_1d(start, end, rx1, rx2)
+            else:
+                if not (rx1 - SECONDARY_SNAP_TOL_M <= fixed <= rx2 + SECONDARY_SNAP_TOL_M):
+                    continue
+                overlap = unfiltered.overlap_1d(start, end, ry1, ry2)
+            if overlap is not None and (overlap[1] - overlap[0]) > 0.01:
+                return True
+        return False
+
     def beam_is_inside_lift(beam) -> bool:
         fixed, start, end = unfiltered.axis_major_values(beam.axis, beam.x1, beam.y1, beam.x2, beam.y2)
         for rect in lift_rectangles:
@@ -1445,6 +1559,10 @@ def build_generated_secondary_raw_rows(
     rows: list[dict[str, object]] = []
     sheet_by_floor = {"Plinth": RAW_SECONDARY_SHEETS[0], "Stilt roof": RAW_SECONDARY_SHEETS[1], "Typical floor roof": RAW_SECONDARY_SHEETS[1], "Terrace": RAW_SECONDARY_SHEETS[1]}
     for beam in list(plinth_beams) + list(nonplinth_beams):
+        # Client rule: no secondary beams in the staircase portion — skip
+        # the whole beam (across all floors it would appear on).
+        if beam_is_inside_staircase(beam):
+            continue
         for floor in beam.floors:
             values = unfiltered.secondary_row_values(
                 beam,
@@ -1811,6 +1929,7 @@ def main() -> None:
     else:
         final_secondary_rows = build_final_secondary_rows(raw_secondary_rows, leveled_nodes, [], [])
 
+    propagate_secondary_walls_to_primary_beams(ws_beams, beam_header_map, final_secondary_rows)
     write_final_secondary_sheet(wb, final_secondary_rows)
     if "Node spacing review" in wb.sheetnames:
         del wb["Node spacing review"]
