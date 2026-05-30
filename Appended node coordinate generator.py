@@ -820,14 +820,19 @@ def write_column_landscape_sheet(wb, ws_cols) -> None:
 def propagate_secondary_walls_to_primary_beams(
     ws_beams,
     header_map: dict[str, int],
-    final_secondary_rows: list[dict[str, object]],
+    final_secondary_rows: list[list[object]],
     snap_tol_m: float = 0.10,
 ) -> int:
     """For each primary beam, if a secondary beam with wall>0 has an endpoint
     touching the primary's line segment, propagate the secondary's wall
     thickness to the primary (take max). This reflects walls transferring
     load through secondaries to the primary — e.g. the lift south wall
-    sitting on B5 via SO4/SO5. Returns the number of rows updated."""
+    sitting on B5 via SO4/SO5. Returns the number of rows updated.
+
+    Each row in final_secondary_rows is a list with fixed positions
+    (matches build_final_secondary_rows):
+       7 = floor, 11 = wall_thickness_mm, 12/13 = snapped X1/Y1, 14/15 = snapped X2/Y2.
+    """
     floor_idx = header_map["floor"]
     wall_idx = header_map["wallthicknessmm"]
     sx_idx = header_map["startanchorxm"]
@@ -838,16 +843,16 @@ def propagate_secondary_walls_to_primary_beams(
     secs_by_floor: dict[str, list[tuple[float, float, float, float, float]]] = {}
     for sec in final_secondary_rows:
         try:
-            floor = str(sec.get("floor") or "").strip()
-            wall = float(sec.get("wall_thickness_mm") or 0)
-        except (TypeError, ValueError):
+            floor = str(sec[7] or "").strip()
+            wall = float(sec[11] or 0)
+        except (TypeError, ValueError, IndexError):
             continue
         if not floor or wall <= 0:
             continue
         try:
-            sx1 = float(sec["x1"]); sy1 = float(sec["y1"])
-            sx2 = float(sec["x2"]); sy2 = float(sec["y2"])
-        except (TypeError, ValueError, KeyError):
+            sx1 = float(sec[12]); sy1 = float(sec[13])
+            sx2 = float(sec[14]); sy2 = float(sec[15])
+        except (TypeError, ValueError, IndexError):
             continue
         secs_by_floor.setdefault(floor, []).append((sx1, sy1, sx2, sy2, wall))
 
