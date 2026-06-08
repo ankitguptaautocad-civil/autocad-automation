@@ -45,7 +45,7 @@ SECONDARY_ZONE_INTERIOR_TOL_M = 0.15
 SECONDARY_R1_MAX_SPAN_M = 2.5
 SECONDARY_R1_ZONE_PROXIMITY_M = 1.5
 SECONDARY_R4_END_EXTENSION_M = 0.45
-SECONDARY_R4_STRONG_WALL_LENGTH_M = 2.0
+SECONDARY_R4_STRONG_WALL_LENGTH_M = 1.5
 SECONDARY_R5_SUPPORT_TOL_M = 0.05
 SECONDARY_R5_EDGE_ALIGN_TOL_M = 0.20
 SECONDARY_PLINTH_WIDTH_MM = 230
@@ -1141,6 +1141,19 @@ def find_wall_bracket_supports(
                 left_vals.append(coord)
             if coord >= end - tolerance_m:
                 right_vals.append(coord)
+    # Column-row support: if the wall's end is near a Y where columns sit
+    # (axis-Y wall) or an X where columns sit (axis-X wall), use that
+    # column row coordinate as the bracket. The wall typically terminates
+    # inside the column extent by up to half a wall thickness, so use the
+    # wider wall-alignment tolerance and snap to the column row itself
+    # rather than the wall's drafting end.
+    col_row_tol = DEFAULT_WALL_ALIGNMENT_TOLERANCE_M
+    for _, cx, cy in column_points:
+        col_perp_to_wall_axis = cy if axis == "Y" else cx
+        if abs(col_perp_to_wall_axis - start) <= col_row_tol:
+            left_vals.append(col_perp_to_wall_axis)
+        if abs(col_perp_to_wall_axis - end) <= col_row_tol:
+            right_vals.append(col_perp_to_wall_axis)
     if not left_vals or not right_vals:
         return None
     left_bracket = max(left_vals)
@@ -1167,6 +1180,29 @@ def find_bracketing_supports(
 
     left_support = start if point_is_support(*left_point, column_points, support_segments) else None
     right_support = end if point_is_support(*right_point, column_points, support_segments) else None
+    # Column-row support: if the wall's end is near a Y where columns sit
+    # (axis-Y wall) or an X where columns sit (axis-X wall), treat that
+    # column row as the structural support — snap the support to the
+    # column's coordinate (so the beam terminates exactly at the structural
+    # row, not at the wall's drafting end which may sit half a wall-
+    # thickness inside the row). Tolerance is the wall-alignment tolerance
+    # because a wall typically terminates inside the column extent by up to
+    # half its own width.
+    col_row_tol = DEFAULT_WALL_ALIGNMENT_TOLERANCE_M
+    if left_support is None:
+        if axis == "Y":
+            cands = [cy for _, _, cy in column_points if abs(cy - start) <= col_row_tol]
+        else:
+            cands = [cx for _, cx, _ in column_points if abs(cx - start) <= col_row_tol]
+        if cands:
+            left_support = min(cands, key=lambda v: abs(v - start))
+    if right_support is None:
+        if axis == "Y":
+            cands = [cy for _, _, cy in column_points if abs(cy - end) <= col_row_tol]
+        else:
+            cands = [cx for _, cx, _ in column_points if abs(cx - end) <= col_row_tol]
+        if cands:
+            right_support = min(cands, key=lambda v: abs(v - end))
     if left_support is None:
         left_hit = first_support_intersection(left_point[0], left_point[1], axis, -1, column_points, support_segments)
         if left_hit is not None:

@@ -924,6 +924,9 @@ def rewrite_primary_beams(ws_beams, leveled_nodes: dict[str, tuple[float, float]
     beam_end_x_idx = header_map["beamendxm"]
     beam_end_y_idx = header_map["beamendym"]
 
+    direction_idx = header_map.get("direction")
+    _DIAGONAL_SNAP_TOL_M = 0.10
+
     for row in ws_beams.iter_rows(min_row=2):
         start_c = str(row[start_c_idx].value or "").strip()
         end_c = str(row[end_c_idx].value or "").strip()
@@ -931,6 +934,19 @@ def rewrite_primary_beams(ws_beams, leveled_nodes: dict[str, tuple[float, float]
             continue
         start_node = leveled_nodes[start_c]
         end_node = leveled_nodes[end_c]
+        # Engineering safety net: when a primary beam links two columns whose
+        # leveled grid lines don't perfectly align (e.g. a Y-direction beam
+        # between columns at X=3.958 and X=4.288), record it as a true axial
+        # beam at the END column's grid line — the offset column has its own
+        # connecting beams from the same data. This persists the correction
+        # into the Primary Beams sheet so every downstream consumer sees the
+        # axial coordinates, not just the PDF render.
+        if direction_idx is not None:
+            direction = str(row[direction_idx].value or "").strip().upper()
+            if direction == "Y" and abs(start_node[0] - end_node[0]) > _DIAGONAL_SNAP_TOL_M:
+                start_node = (end_node[0], start_node[1])
+            elif direction == "X" and abs(start_node[1] - end_node[1]) > _DIAGONAL_SNAP_TOL_M:
+                start_node = (start_node[0], end_node[1])
         row[start_node_x_idx].value = start_node[0]
         row[start_node_y_idx].value = start_node[1]
         row[end_node_x_idx].value = end_node[0]
@@ -1479,42 +1495,21 @@ def build_generated_secondary_raw_rows(
         if wall.dxf_source:
             walls_by_floor.setdefault(wall.dxf_source, []).append(wall)
     rectangles, _ = unfiltered.read_zone_rectangles(other_geometry_path)
-    plinth_rectangles = [rect for rect in rectangles if str(rect.location).strip().lower() == "lift"]
+    # Plinth needs perimeter beams for every slab opening that physically
+    # penetrates the plinth slab. Lift pit + Shaft both go through plinth;
+    # Mumty is rooftop-only (excluded); Staircase rule lives elsewhere.
+    plinth_rectangles = [rect for rect in rectangles if str(rect.location).strip().lower() in ("lift", "shaft")]
     lift_rectangles = [rect for rect in rectangles if str(rect.location).strip().lower() == "lift"]
 
-    # Client rule: no secondary beams in the staircase portion. Read staircase
-    # rectangles from the "Staircase details" sheet (cols 1..4 = x1, y1, x2, y2)
-    # and filter out any generated beam whose footprint overlaps one of them.
-    staircase_rectangles: list[tuple[float, float, float, float]] = []
-    try:
-        _wb_stair = load_workbook(other_geometry_path, data_only=True)
-        if "Staircase details" in _wb_stair.sheetnames:
-            _ws_stair = _wb_stair["Staircase details"]
-            for _r in range(2, _ws_stair.max_row + 1):
-                _row = [_ws_stair.cell(_r, _c).value for _c in range(1, _ws_stair.max_column + 1)]
-                if len(_row) >= 5 and all(isinstance(_row[_i], (int, float)) for _i in range(1, 5)):
-                    _x1, _y1, _x2, _y2 = float(_row[1]), float(_row[2]), float(_row[3]), float(_row[4])
-                    _rx1, _rx2 = sorted((_x1, _x2))
-                    _ry1, _ry2 = sorted((_y1, _y2))
-                    staircase_rectangles.append((_rx1, _rx2, _ry1, _ry2))
-        _wb_stair.close()
-    except Exception:
-        pass
-
-    def beam_is_inside_staircase(beam) -> bool:
-        fixed, start, end = unfiltered.axis_major_values(beam.axis, beam.x1, beam.y1, beam.x2, beam.y2)
-        for (rx1, rx2, ry1, ry2) in staircase_rectangles:
-            if beam.axis == "X":
-                if not (ry1 - SECONDARY_SNAP_TOL_M <= fixed <= ry2 + SECONDARY_SNAP_TOL_M):
-                    continue
-                overlap = unfiltered.overlap_1d(start, end, rx1, rx2)
-            else:
-                if not (rx1 - SECONDARY_SNAP_TOL_M <= fixed <= rx2 + SECONDARY_SNAP_TOL_M):
-                    continue
-                overlap = unfiltered.overlap_1d(start, end, ry1, ry2)
-            if overlap is not None and (overlap[1] - overlap[0]) > 0.01:
-                return True
-        return False
+    # NOTE: A prior "no secondary beams in the staircase portion" filter
+    # (added 30052026a) was removed. It was overreach: it blanket-killed
+    # beams sitting on the staircase boundary, including wall-supporting
+    # beams structurally required wherever a wall flanks the stair opening
+    # (e.g. SP1/SO2 in Mahendra). If a future project ever produces a
+    # spurious beam strictly through the open well of a staircase (R3 across
+    # mid-stair etc.), re-introduce a tighter check that REQUIRES the beam's
+    # fixed coordinate to be > SECONDARY_SNAP_TOL_M inside BOTH staircase
+    # boundaries, not just within tolerance of either.
 
     def beam_is_inside_lift(beam) -> bool:
         fixed, start, end = unfiltered.axis_major_values(beam.axis, beam.x1, beam.y1, beam.x2, beam.y2)
@@ -1540,7 +1535,10 @@ def build_generated_secondary_raw_rows(
         uf_columns,
         primary_supports,
         leveled_nodes,
-        walls_by_floor.get("plinth", []),
+        # Walls on upper floors have their base sitting on the plinth slab.
+        # The base of every wall above plinth needs a supporting plinth beam,
+        # so pass the typical + terrace wall lists in addition to plinth-source.
+        walls_by_floor.get("plinth", []) + walls_by_floor.get("typical", []) + walls_by_floor.get("terrace", []),
         plinth_rectangles,
         floor_group="plinth",
         floors=PLINTH_FLOORS,
@@ -1564,10 +1562,6 @@ def build_generated_secondary_raw_rows(
     rows: list[dict[str, object]] = []
     sheet_by_floor = {"Plinth": RAW_SECONDARY_SHEETS[0], "Stilt roof": RAW_SECONDARY_SHEETS[1], "Typical floor roof": RAW_SECONDARY_SHEETS[1], "Terrace": RAW_SECONDARY_SHEETS[1]}
     for beam in list(plinth_beams) + list(nonplinth_beams):
-        # Client rule: no secondary beams in the staircase portion — skip
-        # the whole beam (across all floors it would appear on).
-        if beam_is_inside_staircase(beam):
-            continue
         for floor in beam.floors:
             values = unfiltered.secondary_row_values(
                 beam,
@@ -1704,6 +1698,136 @@ def build_final_secondary_rows(
             ]
         )
     return final_rows
+
+
+def generate_balcony_cantilever_secondary_beams(
+    columns: list[ColumnRecord],
+    leveled_nodes: dict[str, tuple[float, float]],
+    balcony_rows: list[tuple] | None,
+    final_secondary_rows: list[list[object]],
+    inner_edge_tol_m: float = 0.10,
+    edge_tol_m: float = 0.10,
+) -> list[list[object]]:
+    """Generate cantilever balcony secondary beams (CB1, CB2, ...) as REAL
+    secondary beam rows in the same row-shape as build_final_secondary_rows.
+
+    Triggers (both produce a cantilever):
+      (a) Column whose leveled (node_x, node_y) lies on a balcony's inner edge
+          AND inside that balcony's X span.
+      (b) Existing nonplinth-floor secondary beam endpoint at a balcony inner
+          edge AND inside that balcony's X span.
+
+    Each cantilever spans from (x, inner_y) to (x, outer_y) — a Y-direction
+    beam at the trigger column / endpoint's X coordinate. Replicated across
+    NONPLINTH_FLOORS (Stilt roof / Typical floor roof / Terrace).
+
+    Property table (user spec):
+                       | Front balcony (outer Y < bldg ymin) | Back balcony (outer Y > bldg ymax)
+      Edge column      | 230 x 300, wall 230 mm              | 230 x 450, wall 115 mm
+      Middle column    | 230 x 375, wall   0 mm              | 230 x 375, wall   0 mm
+
+    Edge classification: trigger X within tolerance of building_xmin or
+    building_xmax (computed from leveled node X values). Otherwise middle.
+    """
+    if not balcony_rows or not leveled_nodes:
+        return []
+
+    xs = [c[0] for c in leveled_nodes.values()]
+    ys = [c[1] for c in leveled_nodes.values()]
+    if not xs:
+        return []
+    building_xmin = min(xs)
+    building_xmax = max(xs)
+    building_ymin = min(ys)
+    building_ymax = max(ys)
+
+    front_balconies: list[tuple[float, float, float, float]] = []
+    back_balconies: list[tuple[float, float, float, float]] = []
+    for row in balcony_rows:
+        try:
+            x1 = float(row[1]); y1 = float(row[2])
+            x2 = float(row[3]); y2 = float(row[4])
+        except (TypeError, ValueError, IndexError):
+            continue
+        xlo, xhi = sorted((x1, x2))
+        ylo, yhi = sorted((y1, y2))
+        if ylo < building_ymin - inner_edge_tol_m:
+            front_balconies.append((xlo, xhi, yhi, ylo))  # inner=yhi, outer=ylo
+        elif yhi > building_ymax + inner_edge_tol_m:
+            back_balconies.append((xlo, xhi, ylo, yhi))   # inner=ylo, outer=yhi
+
+    if not front_balconies and not back_balconies:
+        return []
+
+    triggers: list[tuple[float, float, float, str]] = []
+    seen: set[tuple[float, str]] = set()
+
+    def maybe_add(x: float, side: str, inner_y: float, outer_y: float, xlo: float, xhi: float) -> None:
+        if not (xlo - edge_tol_m <= x <= xhi + edge_tol_m):
+            return
+        key = (round(x, 3), side)
+        if key in seen:
+            return
+        seen.add(key)
+        triggers.append((round(x, 3), round(inner_y, 3), round(outer_y, 3), side))
+
+    for col in columns:
+        if col.type_name not in leveled_nodes:
+            continue
+        node_x, node_y = leveled_nodes[col.type_name]
+        for xlo, xhi, inner_y, outer_y in front_balconies:
+            if abs(node_y - inner_y) <= inner_edge_tol_m:
+                maybe_add(node_x, "front", inner_y, outer_y, xlo, xhi)
+        for xlo, xhi, inner_y, outer_y in back_balconies:
+            if abs(node_y - inner_y) <= inner_edge_tol_m:
+                maybe_add(node_x, "back", inner_y, outer_y, xlo, xhi)
+
+    nonplinth_floors = ("Stilt roof", "Typical floor roof", "Terrace")
+    for row in final_secondary_rows:
+        try:
+            floor = str(row[7] or "").strip()
+            if floor not in nonplinth_floors:
+                continue
+            sx1 = float(row[12]); sy1 = float(row[13])
+            sx2 = float(row[14]); sy2 = float(row[15])
+        except (TypeError, ValueError, IndexError):
+            continue
+        for px, py in ((sx1, sy1), (sx2, sy2)):
+            for xlo, xhi, inner_y, outer_y in front_balconies:
+                if abs(py - inner_y) <= inner_edge_tol_m:
+                    maybe_add(px, "front", inner_y, outer_y, xlo, xhi)
+            for xlo, xhi, inner_y, outer_y in back_balconies:
+                if abs(py - inner_y) <= inner_edge_tol_m:
+                    maybe_add(px, "back", inner_y, outer_y, xlo, xhi)
+
+    if not triggers:
+        return []
+
+    triggers.sort(key=lambda t: (0 if t[3] == "front" else 1, t[0]))
+
+    new_rows: list[list[object]] = []
+    cb_counter = 1
+    for x, inner_y, outer_y, side in triggers:
+        is_edge = (abs(x - building_xmin) <= edge_tol_m) or (abs(x - building_xmax) <= edge_tol_m)
+        if side == "front":
+            width, depth, wall = (230, 300, 230) if is_edge else (230, 375, 0)
+        else:
+            width, depth, wall = (230, 450, 115) if is_edge else (230, 375, 0)
+        cb_label = f"CB{cb_counter}"
+        for floor in nonplinth_floors:
+            new_rows.append([
+                cb_counter,
+                cb_label,
+                x, inner_y, x, outer_y,
+                "Centre",
+                floor,
+                "YES",
+                width, depth, wall,
+                x, inner_y, x, outer_y,
+            ])
+        cb_counter += 1
+
+    return new_rows
 
 
 def write_final_secondary_sheet(wb, rows: list[list[object]]) -> tuple[list[float], list[float]]:
@@ -1933,6 +2057,17 @@ def main() -> None:
         write_other_coordinates_workbook(other_output_path, rect_rows, balcony_rows, staircase_rows, ew_rows=ew_rows, ew_support_segments=ew_support_segs)
     else:
         final_secondary_rows = build_final_secondary_rows(raw_secondary_rows, leveled_nodes, [], [])
+        balcony_rows = None
+
+    cantilever_rows = generate_balcony_cantilever_secondary_beams(
+        columns,
+        leveled_nodes,
+        balcony_rows,
+        final_secondary_rows,
+    )
+    if cantilever_rows:
+        print(f"  Balcony cantilever beams added: {len(set(r[1] for r in cantilever_rows))} unique CB beams x {len(cantilever_rows) // max(1, len(set(r[1] for r in cantilever_rows)))} floors = {len(cantilever_rows)} rows")
+        final_secondary_rows = list(final_secondary_rows) + cantilever_rows
 
     propagate_secondary_walls_to_primary_beams(ws_beams, beam_header_map, final_secondary_rows)
     write_final_secondary_sheet(wb, final_secondary_rows)
