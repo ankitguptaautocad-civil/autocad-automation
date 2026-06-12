@@ -675,7 +675,8 @@ def append_node_columns(ws_cols, columns: list[ColumnRecord], leveled_nodes: dic
     info = _read_building_info(info_path)
     yd_zd_headers, yd_zd_defaults = _generate_elevation_yd_zd(info)
 
-    headers = ["Node coordinate X (m)", "Node coordinate Y (m)"] + yd_zd_headers
+    class_header = "Column vs Shear Wall"
+    headers = ["Node coordinate X (m)", "Node coordinate Y (m)", class_header] + yd_zd_headers
     start_col = ws_cols.max_column + 1
     header_positions: dict[str, int] = {}
     for offset, header in enumerate(headers):
@@ -688,7 +689,17 @@ def append_node_columns(ws_cols, columns: list[ColumnRecord], leveled_nodes: dic
         ws_cols.cell(row=column.row_idx, column=header_positions["Node coordinate Y (m)"], value=node_y)
         for yzh, yzv in zip(yd_zd_headers, yd_zd_defaults):
             ws_cols.cell(row=column.row_idx, column=header_positions[yzh], value=yzv)
-    width_map: dict[str, float] = {"Node coordinate X (m)": 18, "Node coordinate Y (m)": 18}
+    # "Column vs Shear Wall" stays blank by default; the user picks a value
+    # from the two-option dropdown attached to the column's data rows.
+    class_letter = get_column_letter(header_positions[class_header])
+    class_dv = DataValidation(type="list", formula1='"Column,Shear Wall"', allow_blank=True)
+    class_dv.errorTitle = "Invalid entry"
+    class_dv.error = "Please choose Column or Shear Wall from the dropdown."
+    class_dv.promptTitle = "Column vs Shear Wall"
+    class_dv.prompt = "Select whether this node is a Column or a Shear Wall."
+    ws_cols.add_data_validation(class_dv)
+    class_dv.add(f"{class_letter}2:{class_letter}5000")
+    width_map: dict[str, float] = {"Node coordinate X (m)": 18, "Node coordinate Y (m)": 18, class_header: 18}
     for yzh in yd_zd_headers:
         width_map[yzh] = 10
     for header, width in width_map.items():
