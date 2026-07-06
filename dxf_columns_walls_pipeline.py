@@ -11,6 +11,7 @@ from openpyxl import Workbook
 import dxf_col_rectangles_to_excel as base
 import dxf_col_rectangles_to_excel_v2 as col_v2
 import dxf_walls_to_excel_v2 as wall_v2
+import wall_anchor_engine as wall_engine
 
 
 DEFAULT_DXF_PATH = base.DEFAULT_DXF_PATH
@@ -818,6 +819,72 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def post_lift_consensus(final_tags, lift_rect_ids, local_rects, x_grid_tolerance_m, y_grid_tolerance_m):
+    """Re-check non-lift columns against corrected (lift-fixed) anchors.
+
+    Extracted verbatim from main()'s former inline block so it can be reused and
+    unit-tested. Behaviour is unchanged from the pre-engine pipeline.
+    """
+    post_lift_changes = []
+    if not lift_rect_ids:
+        return final_tags, post_lift_changes
+    rect_by_idx_pl = {r.idx: r for r in local_rects}
+    corrected_x_anchors = {}
+    corrected_y_anchors = {}
+    for idx, (xt, yt, _) in final_tags.items():
+        r = rect_by_idx_pl[idx]
+        if xt == "Left":
+            corrected_x_anchors[idx] = r.xmin_m
+        elif xt == "Right":
+            corrected_x_anchors[idx] = r.xmax_m
+        if yt == "Front":
+            corrected_y_anchors[idx] = r.ymin_m
+        elif yt == "Back":
+            corrected_y_anchors[idx] = r.ymax_m
+
+    x_consensus_tol = x_grid_tolerance_m * 3.0
+    y_consensus_tol = y_grid_tolerance_m * 3.0
+
+    for idx, (xt, yt, loc) in list(final_tags.items()):
+        if idx in lift_rect_ids:
+            continue
+        r = rect_by_idx_pl[idx]
+        new_xt, new_yt = xt, yt
+
+        if xt is not None:
+            other_x = [v for k, v in corrected_x_anchors.items() if k != idx]
+            if other_x:
+                l_d = [abs(r.xmin_m - v) for v in other_x if abs(r.xmin_m - v) <= x_consensus_tol]
+                r_d = [abs(r.xmax_m - v) for v in other_x if abs(r.xmax_m - v) <= x_consensus_tol]
+                l_s = (len(l_d), -(sum(l_d) / len(l_d)) if l_d else -999, -(min(l_d)) if l_d else -999)
+                r_s = (len(r_d), -(sum(r_d) / len(r_d)) if r_d else -999, -(min(r_d)) if r_d else -999)
+                if l_s > r_s and l_s[0] > 0:
+                    new_xt = "Left"
+                elif r_s > l_s and r_s[0] > 0:
+                    new_xt = "Right"
+
+        if yt is not None:
+            other_y = [v for k, v in corrected_y_anchors.items() if k != idx]
+            if other_y:
+                f_d = [abs(r.ymin_m - v) for v in other_y if abs(r.ymin_m - v) <= y_consensus_tol]
+                b_d = [abs(r.ymax_m - v) for v in other_y if abs(r.ymax_m - v) <= y_consensus_tol]
+                f_s = (len(f_d), -(sum(f_d) / len(f_d)) if f_d else -999, -(min(f_d)) if f_d else -999)
+                b_s = (len(b_d), -(sum(b_d) / len(b_d)) if b_d else -999, -(min(b_d)) if b_d else -999)
+                if f_s > b_s and f_s[0] > 0:
+                    new_yt = "Front"
+                elif b_s > f_s and b_s[0] > 0:
+                    new_yt = "Back"
+
+        if new_xt != xt or new_yt != yt:
+            if new_xt != xt:
+                post_lift_changes.append(f"C{idx}: L/R {xt} -> {new_xt} (post-lift consensus)")
+            if new_yt != yt:
+                post_lift_changes.append(f"C{idx}: F/B {yt} -> {new_yt} (post-lift consensus)")
+            final_tags[idx] = (new_xt, new_yt, loc)
+
+    return final_tags, post_lift_changes
+
+
 def main() -> None:
     args = parse_args()
     floor_dxfs = resolve_floor_dxfs(args)
@@ -839,65 +906,26 @@ def main() -> None:
     )
     final_tags = apply_lift_locations(final_tags, lift_rect_ids, local_rects=typical.local_rects)
 
-    # ── Post-lift consensus: re-check non-lift columns with corrected lift anchors ──
-    post_lift_changes = []
-    if lift_rect_ids:
-        rect_by_idx_pl = {r.idx: r for r in typical.local_rects}
-        # Build corrected anchor values from all tags (including lift-fixed)
-        corrected_x_anchors: dict[int, float] = {}
-        corrected_y_anchors: dict[int, float] = {}
-        for idx, (xt, yt, _) in final_tags.items():
-            r = rect_by_idx_pl[idx]
-            if xt == "Left":
-                corrected_x_anchors[idx] = r.xmin_m
-            elif xt == "Right":
-                corrected_x_anchors[idx] = r.xmax_m
-            if yt == "Front":
-                corrected_y_anchors[idx] = r.ymin_m
-            elif yt == "Back":
-                corrected_y_anchors[idx] = r.ymax_m
+    # ── Post-lift consensus (unchanged) ──
+    final_tags, post_lift_changes = post_lift_consensus(
+        final_tags,
+        lift_rect_ids,
+        typical.local_rects,
+        args.x_grid_tolerance_m,
+        args.y_grid_tolerance_m,
+    )
 
-        x_consensus_tol = args.x_grid_tolerance_m * 3.0
-        y_consensus_tol = args.y_grid_tolerance_m * 3.0
-
-        for idx, (xt, yt, loc) in list(final_tags.items()):
-            if idx in lift_rect_ids:
-                continue
-            r = rect_by_idx_pl[idx]
-            new_xt, new_yt = xt, yt
-
-            # Re-check X
-            if xt is not None:
-                other_x = [v for k, v in corrected_x_anchors.items() if k != idx]
-                if other_x:
-                    l_d = [abs(r.xmin_m - v) for v in other_x if abs(r.xmin_m - v) <= x_consensus_tol]
-                    r_d = [abs(r.xmax_m - v) for v in other_x if abs(r.xmax_m - v) <= x_consensus_tol]
-                    l_s = (len(l_d), -(sum(l_d)/len(l_d)) if l_d else -999, -(min(l_d)) if l_d else -999)
-                    r_s = (len(r_d), -(sum(r_d)/len(r_d)) if r_d else -999, -(min(r_d)) if r_d else -999)
-                    if l_s > r_s and l_s[0] > 0:
-                        new_xt = "Left"
-                    elif r_s > l_s and r_s[0] > 0:
-                        new_xt = "Right"
-
-            # Re-check Y
-            if yt is not None:
-                other_y = [v for k, v in corrected_y_anchors.items() if k != idx]
-                if other_y:
-                    f_d = [abs(r.ymin_m - v) for v in other_y if abs(r.ymin_m - v) <= y_consensus_tol]
-                    b_d = [abs(r.ymax_m - v) for v in other_y if abs(r.ymax_m - v) <= y_consensus_tol]
-                    f_s = (len(f_d), -(sum(f_d)/len(f_d)) if f_d else -999, -(min(f_d)) if f_d else -999)
-                    b_s = (len(b_d), -(sum(b_d)/len(b_d)) if b_d else -999, -(min(b_d)) if b_d else -999)
-                    if f_s > b_s and f_s[0] > 0:
-                        new_yt = "Front"
-                    elif b_s > f_s and b_s[0] > 0:
-                        new_yt = "Back"
-
-            if new_xt != xt or new_yt != yt:
-                if new_xt != xt:
-                    post_lift_changes.append(f"C{idx}: L/R {xt} -> {new_xt} (post-lift consensus)")
-                if new_yt != yt:
-                    post_lift_changes.append(f"C{idx}: F/B {yt} -> {new_yt} (post-lift consensus)")
-                final_tags[idx] = (new_xt, new_yt, loc)
+    # ── Wall-based anchor engine: final Front/Back override from wall control lines ──
+    # Corrects interior columns the family/consensus method ties and mis-defaults
+    # (e.g. symmetric pairs), by reading the beam/grid line off the walls. Only
+    # overrides on confident single-face wall evidence; defers otherwise; never
+    # touches lift columns. Axis-generic — Left/Right activates via ENABLED_AXES.
+    final_tags, _wall_anchor_report = wall_engine.apply_wall_anchor_engine(
+        final_tags,
+        typical.local_rects,
+        typical_local_walls,
+        lift_rect_ids,
+    )
 
     plinth = extract_floor_artifacts("plinth", floor_dxfs["plinth"], args, reference_rects=typical.ordered_rects)
     terrace = extract_floor_artifacts("terrace", floor_dxfs["terrace"], args, reference_rects=typical.ordered_rects)
