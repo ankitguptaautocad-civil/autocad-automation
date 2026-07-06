@@ -1290,6 +1290,23 @@ def write_other_coordinates_workbook(
         ws_stair = wb.create_sheet("Staircase details")
         for row in staircase_rows:
             ws_stair.append(list(row))
+        # Pre-create the staircase design-input rows consumed by staircase_calc.py.
+        # Values are left BLANK (column B) for the team to fill manually; the labels
+        # must contain the keywords staircase_calc's parser looks for. Idempotent —
+        # only adds a label that isn't already present.
+        _stair_input_labels = (
+            "Staircase length (Bs)",     # -> Bs
+            "Mid Landing Width (Wm)",    # -> Wm
+            "Entry Landing Width (Wf)",  # -> Wf
+            "Staircase Breadth (B2)",    # -> B
+            "Tread (T)",                 # -> T
+            "Riser (R)",                 # -> R
+        )
+        _existing_labels = {str(c.value).strip().lower()
+                            for c in ws_stair["A"] if c.value is not None}
+        for _label in _stair_input_labels:
+            if _label.lower() not in _existing_labels:
+                ws_stair.append([_label, None])
         for row in ws_stair.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
