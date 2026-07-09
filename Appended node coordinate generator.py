@@ -583,15 +583,81 @@ def level_nodes_by_face_distance(
     return result
 
 
+NODE_WALL_TOLERANCE_M = 0.05   # mandatory: raw wall line must be within this of the column face (m)
+NODE_WALL_OFFSET_M = 0.115     # fixed offset from the raw wall line to the node (m)
+
+
+def load_raw_wall_lines(wall_path: Path) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    """Read the 'Wall lines (raw)' sheet (typical floor) of the walls workbook.
+
+    Returns (vertical_lines, horizontal_lines). Each entry is (coord, span_lo,
+    span_hi): for a vertical line coord=X and span is in Y; for a horizontal line
+    coord=Y and span is in X. Empty lists if the sheet is absent (older walls
+    file) -> every column then uses the column-corner fallback.
+    """
+    wb = load_workbook(wall_path, data_only=True)
+    if "Wall lines (raw)" not in wb.sheetnames:
+        return [], []
+    ws = wb["Wall lines (raw)"]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    header_map = {normalize_header(value): idx for idx, value in enumerate(headers)}
+    verticals: list[tuple[float, float, float]] = []
+    horizontals: list[tuple[float, float, float]] = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if all(value in (None, "") for value in row):
+            continue
+        if str(row[header_map["dxfsource"]]).strip().lower() != "typical":
+            continue
+        orientation = str(row[header_map["orientation"]]).strip()
+        sx = float(row[header_map["startxm"]]); sy = float(row[header_map["startym"]])
+        ex = float(row[header_map["endxm"]]); ey = float(row[header_map["endym"]])
+        if orientation == "Vertical":
+            verticals.append((round((sx + ex) / 2.0, 3), min(sy, ey), max(sy, ey)))
+        elif orientation == "Horizontal":
+            horizontals.append((round((sy + ey) / 2.0, 3), min(sx, ex), max(sx, ex)))
+    return verticals, horizontals
+
+
+def _wall_line_node_coord(
+    face_coord: float,
+    span_lo: float,
+    span_hi: float,
+    tag: str,
+    axis_lines: list[tuple[float, float, float]],
+) -> float | None:
+    """Node coordinate from the raw wall line on a column's anchor face, or None
+    to fall back to the column-corner method.
+
+    A line (coord, span_start, span_end) is a candidate only if
+    |coord - face_coord| <= NODE_WALL_TOLERANCE_M (mandatory 0.05 m). Among the
+    candidates, lines whose span OVERLAPS the column face span [span_lo, span_hi]
+    (P1 - "kissing" the face) are preferred over lines that do not (P2). Within
+    the chosen tier the line nearest by coordinate wins. The node is that line's
+    coordinate offset by NODE_WALL_OFFSET_M inward per the anchor tag.
+    """
+    candidates = [(c, ss, se) for (c, ss, se) in axis_lines if abs(c - face_coord) <= NODE_WALL_TOLERANCE_M]
+    if not candidates:
+        return None
+    p1 = [(c, ss, se) for (c, ss, se) in candidates if min(se, span_hi) - max(ss, span_lo) > 0]
+    pool = p1 if p1 else candidates
+    coord = min(pool, key=lambda item: abs(item[0] - face_coord))[0]
+    if tag in ("Left", "Front"):
+        return round(coord + NODE_WALL_OFFSET_M, 3)
+    return round(coord - NODE_WALL_OFFSET_M, 3)
+
+
 def compute_leveled_nodes(
     columns: list[ColumnRecord],
     x_beam_widths_by_column: dict[str, list[float]],
     y_beam_widths_by_column: dict[str, list[float]],
     tolerance_m: float,
+    vertical_wall_lines: list[tuple[float, float, float]] | None = None,
+    horizontal_wall_lines: list[tuple[float, float, float]] | None = None,
 ) -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
+    vertical_wall_lines = vertical_wall_lines or []
+    horizontal_wall_lines = horizontal_wall_lines or []
     raw_nodes: dict[str, tuple[float, float]] = {}
-    x_values: list[float] = []
-    y_values: list[float] = []
+    leveled_nodes: dict[str, tuple[float, float]] = {}
 
     for column in columns:
         column_key = column.type_name
@@ -603,16 +669,25 @@ def compute_leveled_nodes(
             primary=x_beam_widths_by_column.get(column_key),
             fallback=y_beam_widths_by_column.get(column_key),
         )
-        node_x, node_y = calc_raw_node(column, x_axis_width_mm, y_axis_width_mm)
-        raw_nodes[column_key] = (node_x, node_y)
-        x_values.append(node_x)
-        y_values.append(node_y)
+        # Fallback (today's method): column anchor face + half beam width.
+        fallback_x, fallback_y = calc_raw_node(column, x_axis_width_mm, y_axis_width_mm)
+        node_x, node_y = fallback_x, fallback_y
 
-    leveled_x = level_nodes_by_face_distance(columns, x_values, "X", BEAM_FACE_MAX_DISTANCE_M)
-    leveled_y = level_nodes_by_face_distance(columns, y_values, "Y", BEAM_FACE_MAX_DISTANCE_M)
-    leveled_nodes: dict[str, tuple[float, float]] = {}
-    for column, node_x, node_y in zip(columns, leveled_x, leveled_y):
-        leveled_nodes[column.type_name] = (round(node_x, 3), round(node_y, 3))
+        # Wall-based override: node = raw wall line on the anchor face +/- 0.115 m.
+        # No leveling/averaging anywhere -- each column reads its own wall line.
+        if column.left_right in ("Left", "Right"):
+            face_x = column.xmin if column.left_right == "Left" else column.xmax
+            wall_x = _wall_line_node_coord(face_x, column.ymin, column.ymax, column.left_right, vertical_wall_lines)
+            if wall_x is not None:
+                node_x = wall_x
+        if column.front_back in ("Front", "Back"):
+            face_y = column.ymin if column.front_back == "Front" else column.ymax
+            wall_y = _wall_line_node_coord(face_y, column.xmin, column.xmax, column.front_back, horizontal_wall_lines)
+            if wall_y is not None:
+                node_y = wall_y
+
+        raw_nodes[column_key] = (round(fallback_x, 3), round(fallback_y, 3))
+        leveled_nodes[column_key] = (round(node_x, 3), round(node_y, 3))
     return raw_nodes, leveled_nodes
 
 
@@ -2007,11 +2082,14 @@ def main() -> None:
     raw_secondary_rows = load_raw_secondary_rows(wb)
     x_beam_widths_by_column, y_beam_widths_by_column, beam_header_map = collect_beam_widths(ws_beams)
     primary_beam_rows = load_primary_beam_rows(ws_beams, beam_header_map)
+    vertical_wall_lines, horizontal_wall_lines = load_raw_wall_lines(wall_path)
     raw_nodes, leveled_nodes = compute_leveled_nodes(
         columns,
         x_beam_widths_by_column=x_beam_widths_by_column,
         y_beam_widths_by_column=y_beam_widths_by_column,
         tolerance_m=args.level_tolerance_m,
+        vertical_wall_lines=vertical_wall_lines,
+        horizontal_wall_lines=horizontal_wall_lines,
     )
 
     append_node_columns(ws_cols, columns, leveled_nodes)

@@ -777,6 +777,54 @@ def write_combined_wall_excel(out_path: Path, floors: list[FloorArtifacts], mm_p
             wall_no += 1
 
     autosize(ws)
+
+    # ── Second sheet: raw (untouched) WALL-layer LINE entities ──
+    # Every drawn WALL-layer line exactly as in the DXF — no pairing, clipping,
+    # dedup or axis-snapping — expressed in the SAME bottom-left-column = (0,0)
+    # local frame as the Walls_m sheet. Each floor's DXF is re-read fresh; the
+    # (world -> local) transform mirrors localized_wall_row (subtract the column
+    # block's insert offset, then the anchor min corner, then scale to metres).
+    import math
+
+    ws2 = wb.create_sheet("Wall lines (raw)")
+    ws2.append(
+        [
+            "Line No",
+            "Start X (m)",
+            "Start Y (m)",
+            "End X (m)",
+            "End Y (m)",
+            "Orientation",
+            "Length (m)",
+            "DXF Source",
+        ]
+    )
+    scale = mm_per_unit / 1000.0
+    tol = DEFAULT_AXIS_ANGLE_TOLERANCE_DEG
+    line_no = 1
+    for floor in floors:
+        doc = base.read_cad_document(floor.dxf_path)
+        ox, oy = find_insert_offset(doc, floor.candidate_name)
+        ax, ay = floor.anchor.xmin, floor.anchor.ymin
+        for entity in doc.modelspace():
+            if entity.dxftype() != "LINE" or str(entity.dxf.layer) != DEFAULT_WALL_LINE_LAYER:
+                continue
+            sx = round((float(entity.dxf.start.x) - ox - ax) * scale, 3)
+            sy = round((float(entity.dxf.start.y) - oy - ay) * scale, 3)
+            ex = round((float(entity.dxf.end.x) - ox - ax) * scale, 3)
+            ey = round((float(entity.dxf.end.y) - oy - ay) * scale, 3)
+            angle = wall_v2.line_angle_deg(ex - sx, ey - sy)
+            if wall_v2.is_near_horizontal(angle, tol):
+                orientation = "Horizontal"
+            elif wall_v2.is_near_vertical(angle, tol):
+                orientation = "Vertical"
+            else:
+                orientation = "Diagonal"
+            ws2.append([f"L{line_no}", sx, sy, ex, ey, orientation,
+                        round(math.hypot(ex - sx, ey - sy), 3), floor.floor_key])
+            line_no += 1
+    autosize(ws2)
+
     wb.save(out_path)
 
 
