@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 # ---- parameters (design doc s2.5; calibrated starting values) ----
 TAU_FACE = 0.06       # m, column face -> control-line incidence tolerance
+TAU_CENTRE = 0.10     # m, if NO aligned wall lies within this of either face (coord-only), the column sits clear of any wall on this axis -> tag Centre
 TAU_CLUSTER = 0.06    # m, 1-D gap for clustering wall faces into a control line
 THETA_MARGIN = 0.25   # fractional support gap needed to settle a both-faces conflict
 BOUNDARY_EPS = 0.01   # m, equality to the plan's global extreme
@@ -123,6 +124,15 @@ def _evidence(face_value, lines):
     return best
 
 
+def _nearest_line_distance(f_lo, f_hi, lines):
+    """Smallest coordinate gap from either column face to ANY control line, or
+    None if there are no lines. Coordinate-only: a line counts regardless of
+    whether it physically runs alongside the column."""
+    if not lines:
+        return None
+    return min(min(abs(f_lo - L.coord), abs(f_hi - L.coord)) for L in lines)
+
+
 def resolve_axis(axis, local_rects, local_walls, g_lo, g_hi):
     """Return {idx: (tag_or_None, tier, ev_lo, ev_hi)} for one axis.
     tag None means 'defer to the existing pipeline tag'."""
@@ -164,8 +174,14 @@ def resolve_axis(axis, local_rects, local_walls, g_lo, g_hi):
                 out[r.idx] = (None, "T3-defer", vlo, vhi)
             continue
 
-        # T4 - no wall evidence either face: defer to existing tag.
-        out[r.idx] = (None, "T4-defer", vlo, vhi)
+        # T4 - no wall within TAU_FACE of either face. If there is ALSO no
+        # aligned wall within TAU_CENTRE of either face, the column sits clear
+        # of any wall on this axis -> tag Centre. Otherwise defer as before.
+        nearest = _nearest_line_distance(f_lo, f_hi, lines)
+        if nearest is None or nearest > TAU_CENTRE:
+            out[r.idx] = ("Centre", "T4-centre", vlo, vhi)
+        else:
+            out[r.idx] = (None, "T4-defer", vlo, vhi)
     return out
 
 
