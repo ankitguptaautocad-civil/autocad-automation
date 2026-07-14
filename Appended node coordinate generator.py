@@ -740,6 +740,16 @@ def _generate_elevation_yd_zd(info: dict) -> tuple[list[str], list[int]]:
     return headers, defaults
 
 
+def _snap_to_standard_column_size_mm(dim_mm: float) -> float:
+    """Snap a drawn column dimension (mm) to the nearest standard RC size.
+    Standard sizes = 25 mm steps from 100 mm, plus 230 mm (industry 9-inch
+    outlier). On an exact tie the larger size wins. Used to derive per-column
+    YD/ZD from the wall-assisted rectangle geometry."""
+    sizes = [100.0 + 25.0 * k for k in range(0, 117)]  # 100 mm .. 3000 mm
+    sizes.append(230.0)
+    return min(sizes, key=lambda s: (abs(s - dim_mm), -s))
+
+
 def append_node_columns(ws_cols, columns: list[ColumnRecord], leveled_nodes: dict[str, tuple[float, float]]) -> None:
     info_path = _find_building_info_xlsx()
     if info_path is None:
@@ -749,6 +759,10 @@ def append_node_columns(ws_cols, columns: list[ColumnRecord], leveled_nodes: dic
         )
     info = _read_building_info(info_path)
     yd_zd_headers, yd_zd_defaults = _generate_elevation_yd_zd(info)
+    # Generic building-info defaults, used only as a fallback when a column has
+    # no drawn rectangle geometry (Width/Height <= 0).
+    default_yd = yd_zd_defaults[0] if yd_zd_defaults else 0
+    default_zd = yd_zd_defaults[1] if len(yd_zd_defaults) > 1 else 0
 
     class_header = "Column vs Shear Wall"
     headers = ["Node coordinate X (m)", "Node coordinate Y (m)", class_header] + yd_zd_headers
@@ -762,8 +776,16 @@ def append_node_columns(ws_cols, columns: list[ColumnRecord], leveled_nodes: dic
         node_x, node_y = leveled_nodes[column.type_name]
         ws_cols.cell(row=column.row_idx, column=header_positions["Node coordinate X (m)"], value=node_x)
         ws_cols.cell(row=column.row_idx, column=header_positions["Node coordinate Y (m)"], value=node_y)
-        for yzh, yzv in zip(yd_zd_headers, yd_zd_defaults):
-            ws_cols.cell(row=column.row_idx, column=header_positions[yzh], value=yzv)
+        # YD/ZD from the actual drawn column size (wall-assisted rectangle),
+        # snapped to the nearest standard size. YD tracks the X-extent (Width),
+        # ZD the Y-extent (Height) -- same convention as column_geometry.csv.
+        width_mm = round((column.xmax - column.xmin) * 1000.0, 1)
+        height_mm = round((column.ymax - column.ymin) * 1000.0, 1)
+        col_yd = int(round(_snap_to_standard_column_size_mm(width_mm))) if width_mm > 0 else default_yd
+        col_zd = int(round(_snap_to_standard_column_size_mm(height_mm))) if height_mm > 0 else default_zd
+        for yzh in yd_zd_headers:
+            value = col_yd if str(yzh).startswith("YD") else col_zd
+            ws_cols.cell(row=column.row_idx, column=header_positions[yzh], value=value)
     # "Column vs Shear Wall" stays blank by default; the user picks a value
     # from the two-option dropdown attached to the column's data rows.
     class_letter = get_column_letter(header_positions[class_header])
