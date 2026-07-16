@@ -1385,7 +1385,15 @@ def write_other_coordinates_workbook(
 
     if staircase_rows:
         ws_stair = wb.create_sheet("Staircase details")
+        # 2026-07-16: the Entry Landing / Mid Landing coordinate rows are no
+        # longer emitted. Their consumers are retired: datadata_updater no longer
+        # reads them, and the initial-structural-plan drawing draws no staircase.
+        # The header and the design-input rows (count/direction/Bs/Wm/Wf/B/T/R)
+        # are unchanged.
+        _skip_stair_labels = {"entry landing", "mid landing"}
         for row in staircase_rows:
+            if row and str(row[0]).strip().lower() in _skip_stair_labels:
+                continue
             ws_stair.append(list(row))
         # Pre-create the staircase design-input rows consumed by staircase_calc.py.
         # Values are left BLANK (column B) for the team to fill manually; the labels
