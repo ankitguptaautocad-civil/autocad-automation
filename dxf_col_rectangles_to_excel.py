@@ -73,6 +73,61 @@ def show_popup(message: str, title: str = POPUP_TITLE) -> None:
     ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
 
 
+# ── Drawing units ───────────────────────────────────────────────────────────
+# The drawing's own $INSUNITS header tells us what one drawing unit means, so the
+# scale is never assumed. Do NOT use $MEASUREMENT for this - it is unreliable and
+# reports "Imperial" even on millimetre drawings.
+INSUNITS_MM_PER_UNIT = {
+    1: 25.4,     # Inches
+    2: 304.8,    # Feet
+    4: 1.0,      # Millimeters
+    5: 10.0,     # Centimeters
+    6: 1000.0,   # Meters
+}
+INSUNITS_LABEL = {
+    1: "Inches", 2: "Feet", 4: "Millimeters", 5: "Centimeters", 6: "Meters",
+}
+INSUNITS_IMPERIAL_CODES = {1, 2}
+
+
+def _units_abort(message: str) -> None:
+    """Show the message to the operator (GUI popup + console) and stop the run."""
+    print(message)
+    try:
+        show_popup(message)
+    except Exception:
+        pass
+    raise SystemExit(message)
+
+
+def drawing_units(doc, label: str = ""):
+    """Return (mm_per_drawing_unit, insunits_code) read from the drawing header.
+
+    Stops the run with a clear operator message if the drawing does not declare
+    its units, rather than silently guessing and producing wrongly-scaled sizes.
+    """
+    try:
+        code = int(doc.header.get("$INSUNITS", 0) or 0)
+    except (TypeError, ValueError):
+        code = 0
+    where = f"\n\nDrawing: {label}" if label else ""
+    if code == 0:
+        _units_abort(
+            "DRAWING UNITS ARE NOT SET." + where + "\n\n"
+            "This drawing does not say what its units are, so column and wall sizes\n"
+            "cannot be read safely and the run has been stopped.\n\n"
+            "To fix: open the drawing in AutoCAD, run the UNITS command, set\n"
+            "'Insertion scale' to Millimeters, save the drawing, then run again."
+        )
+    if code not in INSUNITS_MM_PER_UNIT:
+        _units_abort(
+            f"UNSUPPORTED DRAWING UNITS ($INSUNITS = {code})." + where + "\n\n"
+            "Supported units are Inches, Feet, Millimeters, Centimeters or Meters.\n"
+            "Please set the drawing's insertion scale to Millimeters and run again."
+        )
+    return INSUNITS_MM_PER_UNIT[code], code
+
+
 def validate_drawing_path(path: Path) -> Path:
     resolved = path.resolve()
     if not resolved.is_file():

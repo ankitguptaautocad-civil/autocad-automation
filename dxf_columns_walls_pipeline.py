@@ -937,6 +937,34 @@ def main() -> None:
     args = parse_args()
     floor_dxfs = resolve_floor_dxfs(args)
 
+    # ── Read the drawing's real units instead of assuming inches ─────────────
+    # Every column and wall conversion downstream divides by args.mm_per_unit, so
+    # setting it correctly here fixes the column sizes AND the wall detection in
+    # one place. A drawing with no units declared stops the run with a message.
+    _units_doc = base.read_cad_document(floor_dxfs["typical"])
+    detected_mm_per_unit, _units_code = base.drawing_units(
+        _units_doc, Path(floor_dxfs["typical"]).name
+    )
+    if detected_mm_per_unit != args.mm_per_unit:
+        print(
+            f"[units] {Path(floor_dxfs['typical']).name}: "
+            f"{base.INSUNITS_LABEL.get(_units_code, _units_code)} "
+            f"-> {detected_mm_per_unit} mm per drawing unit "
+            f"(default assumption was {args.mm_per_unit})."
+        )
+    args.mm_per_unit = detected_mm_per_unit
+
+    # The "whole number of units" rectangle test only means something on an
+    # imperial drawing (whole inches). On a metric drawing it just throws away
+    # columns drawn at e.g. 300.2 mm, so it is switched off and the column-hatch
+    # check does the validating instead.
+    if _units_code not in base.INSUNITS_IMPERIAL_CODES and args.inch_multiple_tolerance:
+        print(
+            f"[units] metric drawing -> whole-inch rectangle filter disabled "
+            f"(was {args.inch_multiple_tolerance})."
+        )
+        args.inch_multiple_tolerance = 0.0
+
     typical = extract_floor_artifacts("typical", floor_dxfs["typical"], args)
     initial_tags = col_v2.auto_tag_rects(typical.local_rects, args.x_grid_tolerance_m, args.y_grid_tolerance_m)
     typical_local_walls = localize_walls(typical.ordered_walls, typical.anchor, args.mm_per_unit)

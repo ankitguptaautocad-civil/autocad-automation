@@ -21,8 +21,13 @@ DEFAULT_INCH_MULTIPLE_TOLERANCE = base.DEFAULT_INCH_MULTIPLE_TOLERANCE
 DEFAULT_HATCH_OVERLAP_TOLERANCE = base.DEFAULT_HATCH_OVERLAP_TOLERANCE
 DEFAULT_WALL_LINE_LAYER = "WALL"
 DEFAULT_HATCH_LAYER = "HACH"
-DEFAULT_WALL_THICKNESSES_MM = (115.0, 230.0)
-DEFAULT_WALL_THICKNESS_TOLERANCE_MM = 20.0
+# Allowed wall thicknesses (mm). 100 and 200 added for consultant drawings that
+# use them (e.g. MAX) alongside the 115/230 brick sizes.
+DEFAULT_WALL_THICKNESSES_MM = (100.0, 115.0, 200.0, 230.0)
+# Tolerance MUST stay below half the smallest gap between two allowed thicknesses
+# (100 vs 115 are only 15 mm apart), otherwise their bands overlap and a wall can
+# be classified as the wrong thickness - which would change its mass and stiffness.
+DEFAULT_WALL_THICKNESS_TOLERANCE_MM = 7.0
 DEFAULT_MIN_WALL_LENGTH_MM = 300.0
 DEFAULT_COLUMN_OVERLAP_RATIO = 0.5
 DEFAULT_DUPLICATE_CENTER_TOL_RAW = 1.0
